@@ -41,6 +41,132 @@ POLL_TIMEOUT = 30
 # Max results returned per market in a price query
 MAX_RESULTS_PER_MARKET = 3
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart query expansion: English → Turkish + fuzzy Turkish char variants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# English keyword → Turkish search terms (list of alternatives to try)
+EN_TR_MAP: dict[str, list[str]] = {
+    # Dairy
+    "milk": ["süt"],
+    "yogurt": ["yoğurt", "yogurt"],
+    "yoghurt": ["yoğurt", "yogurt"],
+    "cheese": ["peynir"],
+    "butter": ["tereyağ", "tereyağı"],
+    "cream": ["krema", "kaymak"],
+    "egg": ["yumurta"],
+    "eggs": ["yumurta"],
+    # Bread & grain
+    "bread": ["ekmek"],
+    "flour": ["un"],
+    "rice": ["pirinç", "pilav"],
+    "pasta": ["makarna"],
+    "noodle": ["makarna", "erişte"],
+    "noodles": ["makarna", "erişte"],
+    # Oils & fats
+    "oil": ["yağ"],
+    "sunflower oil": ["ayçiçek yağı"],
+    "olive oil": ["zeytinyağı"],
+    "margarine": ["margarin"],
+    # Sugar & sweets
+    "sugar": ["şeker"],
+    "honey": ["bal"],
+    "jam": ["reçel"],
+    "chocolate": ["çikolata"],
+    # Beverages
+    "tea": ["çay"],
+    "coffee": ["kahve"],
+    "water": ["su", "içme suyu"],
+    "juice": ["meyve suyu", "meyve"],
+    "cola": ["kola", "cola"],
+    # Meat & protein
+    "chicken": ["tavuk", "piliç"],
+    "beef": ["et", "dana"],
+    "meat": ["et"],
+    "fish": ["balık"],
+    "tuna": ["ton balığı", "ton"],
+    # Vegetables & fruit
+    "tomato": ["domates"],
+    "potato": ["patates"],
+    "onion": ["soğan"],
+    "garlic": ["sarımsak"],
+    "pepper": ["biber"],
+    "apple": ["elma"],
+    "banana": ["muz"],
+    "orange": ["portakal"],
+    "lemon": ["limon"],
+    # Condiments & other
+    "salt": ["tuz"],
+    "vinegar": ["sirke"],
+    "ketchup": ["ketçap"],
+    "mayonnaise": ["mayonez"],
+    "mustard": ["hardal"],
+    "soap": ["sabun"],
+    "detergent": ["deterjan"],
+    "shampoo": ["şampuan"],
+    "napkin": ["peçete"],
+    "paper towel": ["kağıt havlu"],
+    "toilet paper": ["tuvalet kağıdı"],
+}
+
+# Turkish character substitutions for fuzzy expansion
+# When a user types without special chars, generate variants
+_TR_FUZZY: list[tuple[str, str]] = [
+    ("s", "ş"),
+    ("c", "ç"),
+    ("g", "ğ"),
+    ("i", "ı"),
+    ("o", "ö"),
+    ("u", "ü"),
+]
+
+
+def expand_query(raw: str) -> list[str]:
+    """
+    Given a raw user query, return an ordered list of search terms to try.
+
+    Strategy:
+    1. If the raw term is an English keyword, translate to Turkish term(s).
+    2. Always include the original query.
+    3. Generate Turkish-char variants (e.g. "sut" → "süt", "sis" → "şiş").
+    Only unique terms are returned, in priority order.
+    """
+    term = raw.strip().lower()
+    candidates: list[str] = []
+
+    # 1. English translation
+    if term in EN_TR_MAP:
+        candidates.extend(EN_TR_MAP[term])
+
+    # Also check multi-word partial matches (e.g. "sunflower" in "sunflower oil")
+    for en_key, tr_vals in EN_TR_MAP.items():
+        if term in en_key or en_key in term:
+            for v in tr_vals:
+                if v not in candidates:
+                    candidates.append(v)
+
+    # 2. Original query
+    if raw.strip() not in candidates:
+        candidates.append(raw.strip())
+
+    # 3. Generate Turkish character variants for short terms (≤ 6 chars)
+    if len(term) <= 6:
+        for ascii_ch, tr_ch in _TR_FUZZY:
+            if ascii_ch in term:
+                variant = term.replace(ascii_ch, tr_ch)
+                if variant not in candidates:
+                    candidates.append(variant)
+
+    # Remove duplicates while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in candidates:
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            unique.append(c)
+
+    return unique
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Telegram helpers
@@ -76,40 +202,51 @@ def get_updates(token: str, offset: int) -> list[dict]:
 # Supabase queries
 # ─────────────────────────────────────────────────────────────────────────────
 
-def search_prices(supabase, query: str) -> list[dict]:
-    """
-    Search price_history for products whose name contains the query string.
-    Returns the most recent record per product_url.
-    Uses ilike for case-insensitive Turkish-friendly matching.
-    """
-    try:
-        response = (
-            supabase.table("price_history")
-            .select(
-                "product_name, market_name, current_price, "
-                "previous_price, price_drop_pct, scraped_date, product_url"
-            )
-            .ilike("product_name", f"%{query}%")
-            .order("scraped_at", desc=True)
-            .limit(50)
-            .execute()
+def _fetch_by_term(supabase, term: str) -> list[dict]:
+    """Single ilike query against price_history, deduplicated by product_url."""
+    response = (
+        supabase.table("price_history")
+        .select(
+            "product_name, market_name, current_price, "
+            "previous_price, price_drop_pct, scraped_date, product_url"
         )
-        rows = response.data or []
+        .ilike("product_name", f"%{term}%")
+        .order("scraped_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    rows = response.data or []
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for row in rows:
+        key = row["product_url"]
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
+    return unique
 
-        # Deduplicate: keep only the freshest record per product_url
-        seen: set[str] = set()
-        unique: list[dict] = []
-        for row in rows:
-            key = row["product_url"]
-            if key not in seen:
-                seen.add(key)
-                unique.append(row)
 
-        return unique
+def search_prices(supabase, query: str) -> tuple[list[dict], str]:
+    """
+    Search price_history using smart query expansion.
+    Tries multiple terms (English translation, original, Turkish char variants)
+    and returns results from the first term that yields results.
 
-    except Exception as exc:
-        logger.error(f"search_prices error for '{query}': {exc}")
-        return []
+    Returns (rows, matched_term) — matched_term is what actually found results.
+    """
+    terms = expand_query(query)
+    logger.info(f"Query '{query}' expanded to: {terms}")
+
+    for term in terms:
+        try:
+            rows = _fetch_by_term(supabase, term)
+            if rows:
+                logger.info(f"Found {len(rows)} results for term '{term}'")
+                return rows, term
+        except Exception as exc:
+            logger.error(f"search_prices error for '{term}': {exc}")
+
+    return [], query
 
 
 def get_all_markets(supabase) -> list[str]:
@@ -159,9 +296,10 @@ def fmt_price(price) -> str:
         return str(price)
 
 
-def build_price_reply(query: str, rows: list[dict]) -> str:
+def build_price_reply(query: str, rows: list[dict], matched_term: str = "") -> str:
     """
     Build a Telegram message showing prices grouped by market.
+    If matched_term differs from query (translation/fuzzy), show a note.
     """
     if not rows:
         return (
@@ -169,13 +307,20 @@ def build_price_reply(query: str, rows: list[dict]) -> str:
             f"Farklı bir kelime deneyin (örn: süt, ekmek, yağ, şeker)"
         )
 
+    # Header — note if we matched via a translated/expanded term
+    display = matched_term if matched_term else query
+    if matched_term and matched_term.lower() != query.lower():
+        header = f"🛒 *{display.upper()}* fiyatları: _('{query}' için)_\n"
+    else:
+        header = f"🛒 *{display.upper()}* fiyatları:\n"
+
     # Group by market
     by_market: dict[str, list[dict]] = {}
     for row in rows:
         m = row["market_name"]
         by_market.setdefault(m, []).append(row)
 
-    lines = [f"🛒 *{query.upper()}* fiyatları:\n"]
+    lines = [header]
 
     for market in sorted(by_market.keys()):
         items = by_market[market][:MAX_RESULTS_PER_MARKET]
@@ -262,8 +407,8 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
         if not query:
             send(token, chat_id, "❓ Kullanım: `/fiyat süt`")
             return
-        rows = search_prices(supabase, query)
-        send(token, chat_id, build_price_reply(query, rows))
+        rows, matched = search_prices(supabase, query)
+        send(token, chat_id, build_price_reply(query, rows, matched))
 
     elif lower.startswith("/"):
         # Unknown slash command — ignore silently
@@ -271,8 +416,8 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
 
     else:
         # Treat any plain text as a product query
-        rows = search_prices(supabase, text)
-        send(token, chat_id, build_price_reply(text, rows))
+        rows, matched = search_prices(supabase, text)
+        send(token, chat_id, build_price_reply(text, rows, matched))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
