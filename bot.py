@@ -121,35 +121,75 @@ _TR_FUZZY: list[tuple[str, str]] = [
 ]
 
 
+import re as _re
+import string as _string
+
+# Words to strip when user writes a full sentence like "how about price of milk?"
+_FILLER_WORDS = {
+    # English
+    "how", "about", "price", "of", "the", "a", "an", "what", "is", "are",
+    "show", "me", "get", "find", "tell", "check", "much", "does", "cost",
+    "for", "please", "pls", "can", "you", "i", "want", "need", "buy",
+    "any", "do", "have", "give", "look", "search",
+    # Turkish
+    "fiyatı", "fiyat", "ne", "kadar", "nedir", "var", "mı", "mi", "mu", "mü",
+    "hangi", "en", "ucuz", "pahalı", "bul", "göster", "ver", "lütfen",
+    "acaba", "ürün", "ürünü", "almak", "istiyorum",
+}
+
+
+def _clean_query(raw: str) -> str:
+    """
+    Strip punctuation and filler words from a sentence to extract the product keyword.
+    'How about price of 0.5 le water?' → 'water'
+    'Su?' → 'Su'
+    """
+    # Remove punctuation except Turkish letters
+    cleaned = _re.sub(r"[^\w\sğüşıöçĞÜŞİÖÇ]", " ", raw, flags=_re.UNICODE)
+    # Split and filter filler words and pure numbers
+    words = [
+        w for w in cleaned.split()
+        if w.lower() not in _FILLER_WORDS
+        and not _re.match(r"^\d+([.,]\d+)?$", w)
+        and len(w) >= 2
+    ]
+    if words:
+        # Return the last meaningful word (usually the product name at end of sentence)
+        return words[-1]
+    return raw.strip()
+
+
 def expand_query(raw: str) -> list[str]:
     """
     Given a raw user query, return an ordered list of search terms to try.
 
     Strategy:
-    1. If the raw term is an English keyword, translate to Turkish term(s).
-    2. Always include the original query.
-    3. Generate Turkish-char variants (e.g. "sut" → "süt", "sis" → "şiş").
+    0. Clean punctuation and strip filler words from sentences.
+    1. If the cleaned term matches an English keyword, translate to Turkish.
+    2. Always include the cleaned query.
+    3. Generate Turkish character variants for short terms (≤ 6 chars).
     Only unique terms are returned, in priority order.
     """
-    term = raw.strip().lower()
+    cleaned = _clean_query(raw)
+    term = cleaned.strip().lower()
     candidates: list[str] = []
 
-    # 1. English translation
+    # 1. English translation — exact match
     if term in EN_TR_MAP:
         candidates.extend(EN_TR_MAP[term])
 
-    # Also check multi-word partial matches (e.g. "sunflower" in "sunflower oil")
+    # Partial match: e.g. "sunflower" matches key "sunflower oil"
     for en_key, tr_vals in EN_TR_MAP.items():
         if term in en_key or en_key in term:
             for v in tr_vals:
                 if v not in candidates:
                     candidates.append(v)
 
-    # 2. Original query
-    if raw.strip() not in candidates:
-        candidates.append(raw.strip())
+    # 2. Cleaned query itself
+    if cleaned not in candidates:
+        candidates.append(cleaned)
 
-    # 3. Generate Turkish character variants for short terms (≤ 6 chars)
+    # 3. Turkish character variants for short terms
     if len(term) <= 6:
         for ascii_ch, tr_ch in _TR_FUZZY:
             if ascii_ch in term:
@@ -165,6 +205,7 @@ def expand_query(raw: str) -> list[str]:
             seen.add(c.lower())
             unique.append(c)
 
+    logger.debug(f"expand_query: '{raw}' → cleaned='{cleaned}' → {unique}")
     return unique
 
 
@@ -510,7 +551,9 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
     else:
         # Treat any plain text as a product query
         rows, matched = search_prices(supabase, text)
-        send(token, chat_id, build_price_reply(text, rows, matched))
+        # Use the cleaned keyword as the display label, not the full sentence
+        display_query = _clean_query(text)
+        send(token, chat_id, build_price_reply(display_query, rows, matched))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -529,7 +572,20 @@ def run_bot() -> None:
     bot_name = me.get("result", {}).get("username", "unknown")
     logger.info(f"Bot running as @{bot_name}")
 
-    offset = 0
+    # Skip any updates that arrived while the bot was offline (stale messages).
+    # A single getUpdates with timeout=0 and offset=-1 returns at most the last
+    # update; advancing past it prevents replying to old messages on restart.
+    try:
+        stale = tg(token, "getUpdates", offset=-1, timeout=0)
+        stale_results = stale.get("result", [])
+        if stale_results:
+            offset = stale_results[-1]["update_id"] + 1
+            logger.info(f"Skipped {len(stale_results)} stale update(s), starting at offset {offset}")
+        else:
+            offset = 0
+    except Exception:
+        offset = 0
+
     while True:
         try:
             updates = get_updates(token, offset)
