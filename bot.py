@@ -349,9 +349,25 @@ def start_health_server():
     server.serve_forever()
 
 
+def self_ping():
+    """Ping own health endpoint every 10 minutes to prevent Render free tier sleep."""
+    port = int(os.environ.get("PORT", 10000))
+    url = f"http://0.0.0.0:{port}/"
+    while True:
+        time.sleep(600)  # 10 minutes
+        try:
+            requests.get(url, timeout=5)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
-    # Start health check HTTP server in background thread (for Render)
-    t = threading.Thread(target=start_health_server, daemon=True)
-    t.start()
+    port = int(os.environ.get("PORT", 10000))
+    # Start health check HTTP server
+    t1 = threading.Thread(target=start_health_server, daemon=True)
+    t1.start()
+    # Self-ping to prevent Render free tier sleep
+    t2 = threading.Thread(target=self_ping, daemon=True)
+    t2.start()
     # Run Telegram bot on main thread
     run_bot()
