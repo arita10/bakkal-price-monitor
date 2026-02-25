@@ -1,0 +1,23 @@
+# Environment secrets — NEVER commit these
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Playwright / Crawl4AI browser cache
+.crawl4ai/
+ms-playwright/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

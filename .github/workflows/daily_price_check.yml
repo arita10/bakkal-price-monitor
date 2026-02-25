@@ -1,0 +1,67 @@
+name: Daily Bakkal Price Check
+
+# ── How to run the API server (separate from this cron job) ───────────────
+# Local:   uvicorn api:app --reload --port 8000
+# Docs UI: http://localhost:8000/docs
+# Deploy:  push to Railway / Render / Fly.io — they detect uvicorn automatically
+# ──────────────────────────────────────────────────────────────────────────
+
+on:
+  # 04:00 UTC = 07:00 Istanbul/Sakarya (TST = UTC+3)
+  schedule:
+    - cron: "0 4 * * *"
+  # Also allow manual runs from the GitHub Actions UI for testing
+  workflow_dispatch:
+
+jobs:
+  price-check:
+    name: Run Price Monitor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Secrets set in: Settings > Secrets and variables > Actions > Secrets
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Variables set in: Settings > Secrets and variables > Actions > Variables
+      PRICE_DROP_THRESHOLD: ${{ vars.PRICE_DROP_THRESHOLD || '5.0' }}
+      GEMINI_CHUNK_SIZE: ${{ vars.GEMINI_CHUNK_SIZE || '2000' }}
+      SHOP_LAT: ${{ vars.SHOP_LAT || '40.7569' }}
+      SHOP_LON: ${{ vars.SHOP_LON || '30.3783' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"   # Caches pip downloads across runs for faster CI
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # crawl4ai-setup downloads the Playwright browsers needed for headless scraping.
+      # chromium --with-deps installs OS-level dependencies (fonts, libs) on Ubuntu.
+      - name: Install Playwright browsers (required by Crawl4AI)
+        run: |
+          crawl4ai-setup
+          playwright install chromium --with-deps
+
+      - name: Run price monitor
+        run: python main.py
+
+      # Upload logs as an artifact when the job fails so you can debug remotely.
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-monitor-failure-logs-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
