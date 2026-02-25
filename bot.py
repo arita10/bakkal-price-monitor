@@ -16,7 +16,10 @@ Commands:
 """
 
 import logging
+import os
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 from supabase import create_client
@@ -325,5 +328,30 @@ def run_bot() -> None:
                     pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimal HTTP server — required by Render Web Service to bind a port
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass  # Suppress HTTP access logs
+
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"Health server listening on port {port}")
+    server.serve_forever()
+
+
 if __name__ == "__main__":
+    # Start health check HTTP server in background thread (for Render)
+    t = threading.Thread(target=start_health_server, daemon=True)
+    t.start()
+    # Run Telegram bot on main thread
     run_bot()
