@@ -1,12 +1,13 @@
 services:
-  # ── Telegram Bot (24/7 polling) ──────────────────────────────────────────
   - type: worker
     name: bakkal-bot
-    runtime: python
+    env: python
     buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
     startCommand: python bot.py
     plan: free
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
@@ -25,18 +26,17 @@ services:
         value: "40.7569"
       - key: SHOP_LON
         value: "30.3783"
-      - key: PYTHON_VERSION
-        value: "3.11.0"
 
-  # ── Daily Price Scraper (Cron Job) ────────────────────────────────────────
   - type: cron
     name: bakkal-daily-scraper
-    runtime: python
+    env: python
     buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
     startCommand: python main.py
-    schedule: "0 4 * * *"   # 04:00 UTC = 07:00 Sakarya (UTC+3)
+    schedule: "0 4 * * *"
     plan: free
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
@@ -55,5 +55,3 @@ services:
         value: "40.7569"
       - key: SHOP_LON
         value: "30.3783"
-      - key: PYTHON_VERSION
-        value: "3.11.0"
