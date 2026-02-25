@@ -7,10 +7,8 @@ name: Daily Bakkal Price Check
 # ──────────────────────────────────────────────────────────────────────────
 
 on:
-  # 04:00 UTC = 07:00 Istanbul/Sakarya (TST = UTC+3)
-  schedule:
-    - cron: "0 4 * * *"
-  # Also allow manual runs from the GitHub Actions UI for testing
+  # Schedule disabled — daily scraper now runs on Render cron job
+  # Kept here for manual testing only
   workflow_dispatch:
 
 jobs:
@@ -23,7 +21,7 @@ jobs:
       # Secrets set in: Settings > Secrets and variables > Actions > Secrets
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       # Variables set in: Settings > Secrets and variables > Actions > Variables
