@@ -42,6 +42,19 @@ CIMRI_TARGET_URLS = [
     "https://www.cimri.com/market",
 ]
 
+# ── Target pages for essenjet.com Crawl4AI scraping ──────────────────────────
+# Key grocery category pages — JS-rendered, requires Playwright
+ESSEN_TARGET_URLS = [
+    "https://www.essenjet.com/sut-sut-urunleri",       # Süt & süt ürünleri
+    "https://www.essenjet.com/ekmek-unlu-mamuller",    # Ekmek & unlu mamüller
+    "https://www.essenjet.com/yag-sivi-yag",           # Yağ
+    "https://www.essenjet.com/seker-tatli",             # Şeker & tatlı
+    "https://www.essenjet.com/cay-kahve",               # Çay & kahve
+    "https://www.essenjet.com/makarna-pirinc-bakliyat", # Makarna, pirinç
+    "https://www.essenjet.com/et-tavuk",                # Et & tavuk
+    "https://www.essenjet.com/meyve-sebze",             # Meyve & sebze
+]
+
 
 @dataclass
 class ProductRaw:
@@ -227,6 +240,107 @@ async def scrape_cimri(config: dict) -> list[ProductRaw]:
             except Exception as exc:
                 logger.error(f"Unexpected error crawling {url}: {repr(exc)}")
 
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# essenjet.com — Crawl4AI (JS-rendered → Markdown)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def scrape_essen(config: dict) -> list[ProductRaw]:
+    """
+    Scrape essenjet.com grocery category pages using Crawl4AI + Playwright.
+    The site is fully JS-rendered (Vue/React SPA), so we wait for product
+    grid elements to appear before extracting markdown.
+    Returns a list of ProductRaw Markdown chunks.
+    """
+    chunk_size = config["GEMINI_CHUNK_SIZE"]
+    results: list[ProductRaw] = []
+
+    browser_cfg = BrowserConfig(
+        headless=True,
+        verbose=False,
+        extra_args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
+
+    content_filter = PruningContentFilter(threshold=0.4)
+    md_generator = DefaultMarkdownGenerator(
+        content_filter=content_filter,
+        options={
+            "ignore_links": False,
+            "ignore_images": True,
+            "body_width": 0,
+        },
+    )
+    run_cfg = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        markdown_generator=md_generator,
+        # Wait for product cards — try common SPA selectors
+        wait_for="css:.product-card, css:.product-item, css:.urun, css:main",
+        page_timeout=50_000,  # 50 s — SPA hydration can be slow
+    )
+
+    async with AsyncWebCrawler(config=browser_cfg) as crawler:
+        for url in ESSEN_TARGET_URLS:
+            try:
+                logger.info(f"Crawling Essen: {url}")
+                result = await crawler.arun(url=url, config=run_cfg)
+
+                if not result.success:
+                    logger.warning(
+                        f"Essen crawl failed for {url}: {result.error_message}"
+                    )
+                    continue
+
+                markdown_text = (
+                    result.markdown.fit_markdown
+                    if result.markdown and result.markdown.fit_markdown
+                    else (result.markdown.raw_markdown if result.markdown else "")
+                )
+
+                if not markdown_text or len(markdown_text.strip()) < 100:
+                    logger.warning(f"Essen: too little content from {url}, skipping")
+                    continue
+
+                chunks = chunk_text(markdown_text, chunk_size)
+                for chunk in chunks:
+                    results.append(
+                        ProductRaw(
+                            source="essen_crawl",
+                            content=chunk,
+                            source_url=url,
+                        )
+                    )
+                logger.info(f"Essen crawled {url} → {len(chunks)} chunk(s)")
+
+                # Polite delay between category pages
+                await asyncio.sleep(2.0)
+
+            except UnicodeEncodeError:
+                logger.error(f"Essen encoding error for {url} (Windows charmap)")
+                try:
+                    markdown_text = (
+                        result.markdown.fit_markdown
+                        if result.markdown and result.markdown.fit_markdown
+                        else (result.markdown.raw_markdown if result.markdown else "")
+                    )
+                    if markdown_text:
+                        chunks = chunk_text(markdown_text, chunk_size)
+                        for chunk in chunks:
+                            results.append(
+                                ProductRaw(
+                                    source="essen_crawl",
+                                    content=chunk,
+                                    source_url=url,
+                                )
+                            )
+                        logger.info(f"Essen salvaged {len(chunks)} chunk(s) from {url}")
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error(f"Essen unexpected error for {url}: {repr(exc)}")
+
+    logger.info(f"Essen scrape complete: {len(results)} total chunk(s)")
     return results
 
 

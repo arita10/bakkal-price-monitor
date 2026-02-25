@@ -22,7 +22,7 @@ from supabase import create_client
 from alerts import send_daily_summary, send_price_drop_alert
 from config import load_config
 from parser import ProductData, build_gemini_client, parse_chunk
-from scraper import fetch_all_marketfiyati, scrape_cimri
+from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen
 from storage import get_last_price, upsert_price
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,7 +62,11 @@ async def run() -> None:
     cimri_items = await scrape_cimri(config)
     raw_items.extend(cimri_items)
 
-    logger.info(f"Total raw chunks to parse with Gemini: {len(raw_items)}")
+    # ── 4b. Scrape — essenjet.com via Crawl4AI ───────────────────────────────
+    essen_items = await scrape_essen(config)
+    raw_items.extend(essen_items)
+
+    logger.info(f"Total raw chunks to parse with OpenAI: {len(raw_items)}")
 
     # ── 5. Parse chunks with Gemini ──────────────────────────────────────────
     all_products: list[ProductData] = []
@@ -73,7 +77,7 @@ async def run() -> None:
         # Gemini 1.5 Flash free tier: 15 RPM → 4-second gap keeps us safe
         await asyncio.sleep(4.0)
 
-    logger.info(f"Gemini extracted {len(all_products)} product(s) total")
+    logger.info(f"OpenAI extracted {len(all_products)} product(s) total")
 
     # ── 6. Deduplicate by product_url ────────────────────────────────────────
     seen_urls: set[str] = set()
