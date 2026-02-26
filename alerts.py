@@ -34,6 +34,11 @@ def _fmt_price(price: float) -> str:
     return f"{turkish} TL"
 
 
+def _esc(text: str) -> str:
+    """Escape HTML special chars for Telegram HTML parse mode."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def send_price_drop_alert(
     bot_token: str,
     chat_id: str,
@@ -43,27 +48,27 @@ def send_price_drop_alert(
 ) -> bool:
     """
     Send a Telegram BUY alert for a detected price drop.
-    Message is formatted in Turkish using Markdown.
+    Message is formatted in Turkish using HTML parse mode.
     Returns True if delivered successfully, False otherwise.
     """
     prev_fmt = _fmt_price(previous_price)
     curr_fmt = _fmt_price(product.current_price)
 
     message = (
-        f"*Fiyat Düşüşü Alarmı!*\n\n"
-        f"*{product.product_name}*\n"
-        f"Market: {product.market_name}\n"
-        f"Önceki Fiyat: {prev_fmt}\n"
-        f"Yeni Fiyat: *{curr_fmt}*\n"
-        f"Düşüş: *%{drop_pct:.1f}*\n\n"
-        f"[Ürüne Git]({product.product_url})"
+        f"📉 <b>Fiyat Düşüşü Alarmı!</b>\n\n"
+        f"<b>{_esc(product.product_name)}</b>\n"
+        f"Market: {_esc(product.market_name)}\n"
+        f"Önceki Fiyat: {_esc(prev_fmt)}\n"
+        f"Yeni Fiyat: <b>{_esc(curr_fmt)}</b>\n"
+        f"Düşüş: <b>%{drop_pct:.1f}</b>\n\n"
+        f'<a href="{_esc(product.product_url)}">Ürüne Git</a>'
     )
 
     url = _TELEGRAM_API.format(token=bot_token)
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
 
@@ -93,7 +98,7 @@ def send_daily_summary(
     """
     now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
     message = (
-        f"*Bakkal Monitor — Günlük Rapor*\n"
+        f"<b>Bakkal Monitor — Günlük Rapor</b>\n"
         f"Tarih: {now_str}\n\n"
         f"Taranan ürün: {total_scraped}\n"
         f"Fiyat düşüşü alarmı: {total_alerts}\n"
@@ -107,7 +112,7 @@ def send_daily_summary(
             json={
                 "chat_id": chat_id,
                 "text": message,
-                "parse_mode": "Markdown",
+                "parse_mode": "HTML",
             },
             timeout=15,
         )

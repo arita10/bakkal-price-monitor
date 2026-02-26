@@ -1,10 +1,12 @@
 """
-scraper.py — Data fetching from two sources:
+scraper.py — Data fetching from four sources:
   1. marketfiyati.org.tr REST API (JSON)
   2. cimri.com via Crawl4AI (HTML → Markdown)
+  3. essenjet.com via direct Playwright CSS extraction
+  4. bizimtoptan.com.tr via direct Playwright CSS extraction
 
-Both sources return ProductRaw objects containing a text chunk and metadata.
-The chunks are later fed to parser.py (Gemini) for structured extraction.
+Sources 1 & 2 return ProductRaw chunks fed to parser.py (OpenAI) for extraction.
+Sources 3 & 4 return structured dicts directly — no AI parsing needed.
 """
 
 import asyncio

@@ -4,7 +4,7 @@ main.py — Bakkal Price Monitoring Orchestrator
 Daily workflow:
   1. Load config from environment variables
   2. Fetch raw product data (marketfiyati API + cimri.com via Crawl4AI)
-  3. Parse chunks with Gemini 1.5 Flash → structured ProductData
+  3. Parse chunks with OpenAI GPT-4o Mini → structured ProductData
   4. For each product: compare with last Supabase price
        → Send Telegram BUY alert if price dropped >= threshold
        → Upsert current price into Supabase
