@@ -224,13 +224,20 @@ def tg(token: str, method: str, **kwargs) -> dict:
         return {}
 
 
+def _esc(text: str) -> str:
+    """Escape HTML special chars for Telegram HTML parse mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def send(token: str, chat_id: int, text: str) -> None:
-    """Send a Markdown-formatted message."""
-    tg(token, "sendMessage",
-       chat_id=chat_id,
-       text=text,
-       parse_mode="Markdown",
-       disable_web_page_preview=True)
+    """Send an HTML-formatted message. Logs API errors explicitly."""
+    result = tg(token, "sendMessage",
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True)
+    if result and not result.get("ok"):
+        logger.error(f"sendMessage failed: {result.get('description')} | text[:80]={text[:80]!r}")
 
 
 def get_updates(token: str, offset: int) -> list[dict]:
@@ -339,25 +346,23 @@ def fmt_price(price) -> str:
 
 def build_price_reply(query: str, rows: list[dict], matched_term: str = "") -> str:
     """
-    Build a friendly Telegram message showing prices grouped by market,
+    Build a friendly Telegram HTML message showing prices grouped by market,
     with contextual suggestions at the end.
     """
     if not rows:
         return (
-            f"😕 *'{query}'* için şu an fiyat bulamadım.\n\n"
+            f"😕 <b>'{_esc(query)}'</b> için şu an fiyat bulamadım.\n\n"
             f"Belki şunları deneyebilirsiniz:\n"
-            f"`süt`  `ekmek`  `yağ`  `şeker`  `çay`\n\n"
-            f"_İpucu: İngilizce de yazabilirsiniz — milk, bread, oil..._"
+            f"<code>süt</code>  <code>ekmek</code>  <code>yağ</code>  <code>şeker</code>  <code>çay</code>\n\n"
+            f"<i>İpucu: İngilizce de yazabilirsiniz — milk, bread, oil...</i>"
         )
 
     # Header — friendly note if we matched via a translated/expanded term
     display = matched_term if matched_term else query
     if matched_term and matched_term.lower() != query.lower():
-        header = (
-            f"✅ '*{query}*' için *{display.upper()}* sonuçlarını getirdim:\n"
-        )
+        header = f"✅ '<b>{_esc(query)}</b>' için <b>{_esc(display.upper())}</b> sonuçlarını getirdim:\n"
     else:
-        header = f"🛒 *{display.upper()}* fiyatları:\n"
+        header = f"🛒 <b>{_esc(display.upper())}</b> fiyatları:\n"
 
     # Group by market
     by_market: dict[str, list[dict]] = {}
@@ -369,21 +374,21 @@ def build_price_reply(query: str, rows: list[dict], matched_term: str = "") -> s
 
     for market in sorted(by_market.keys()):
         items = by_market[market][:MAX_RESULTS_PER_MARKET]
-        lines.append(f"🏪 *{market}*")
+        lines.append(f"🏪 <b>{_esc(market)}</b>")
         for item in items:
             price_str = fmt_price(item["current_price"])
-            name = item["product_name"]
+            name = _esc(item["product_name"])
             drop = item.get("price_drop_pct")
             drop_str = ""
             if drop is not None and float(drop) > 0:
                 drop_str = f" 📉 -%{fmt_price(drop)}"
             elif drop is not None and float(drop) < 0:
                 drop_str = f" 📈 +%{fmt_price(abs(float(drop)))}"
-            lines.append(f"  • {name} — *{price_str} TL*{drop_str}")
+            lines.append(f"  • {name} — <b>{price_str} TL</b>{drop_str}")
         lines.append("")
 
     date = rows[0].get("scraped_date", "")
-    lines.append(f"_📅 Son güncelleme: {date}_")
+    lines.append(f"<i>📅 Son güncelleme: {_esc(str(date))}</i>")
 
     # Contextual suggestions
     lines.append(_suggestion_line(display))
@@ -397,14 +402,12 @@ def build_markets_reply(markets: list[str]) -> str:
             "🤔 Henüz market verisi yok.\n\n"
             "Veriler her sabah 07:00'de güncelleniyor, biraz sonra tekrar deneyin!"
         )
-    lines = [
-        f"🏪 *Takip ettiğim {len(markets)} market:*\n"
-    ]
+    lines = [f"🏪 <b>Takip ettiğim {len(markets)} market:</b>\n"]
     for m in markets:
-        lines.append(f"  • {m}")
+        lines.append(f"  • {_esc(m)}")
     lines.append(
-        "\n💡 _Bir ürün adı yazarak tüm marketlerde fiyat karşılaştırabilirsiniz._\n"
-        "Örnek: `süt`, `ekmek`, `yağ`"
+        "\n💡 <i>Bir ürün adı yazarak tüm marketlerde fiyat karşılaştırabilirsiniz.</i>\n"
+        "Örnek: <code>süt</code>, <code>ekmek</code>, <code>yağ</code>"
     )
     return "\n".join(lines)
 
@@ -415,15 +418,15 @@ def build_recent_reply(rows: list[dict]) -> str:
             "🤔 Henüz veri yok gibi görünüyor.\n\n"
             "Biraz sonra tekrar deneyin, veriler her sabah güncelleniyor! 🌅"
         )
-    lines = ["🕒 *Az önce güncellenen ürünler:*\n"]
+    lines = ["🕒 <b>Az önce güncellenen ürünler:</b>\n"]
     for row in rows:
         price_str = fmt_price(row["current_price"])
         lines.append(
-            f"  • {row['product_name']} — *{price_str} TL* _{row['market_name']}_"
+            f"  • {_esc(row['product_name'])} — <b>{price_str} TL</b> <i>{_esc(row['market_name'])}</i>"
         )
     lines.append(
-        "\n💡 _Bir ürünü daha detaylı görmek için adını yazmanız yeterli!_\n"
-        "Örnek: `süt`, `ekmek`, `yağ`"
+        "\n💡 <i>Bir ürünü daha detaylı görmek için adını yazmanız yeterli!</i>\n"
+        "Örnek: <code>süt</code>, <code>ekmek</code>, <code>yağ</code>"
     )
     return "\n".join(lines)
 
@@ -465,8 +468,8 @@ def _get_suggestions(matched_term: str) -> list[str]:
 
 def _suggestion_line(matched_term: str) -> str:
     sugs = _get_suggestions(matched_term)
-    chips = "  ".join(f"`{s}`" for s in sugs)
-    return f"\n💡 *Bunları da sorabilirsiniz:*\n{chips}"
+    chips = "  ".join(f"<code>{_esc(s)}</code>" for s in sugs)
+    return f"\n💡 <b>Bunları da sorabilirsiniz:</b>\n{chips}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -480,32 +483,32 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
 
     if lower in ("/start", "/start@bakkalbot"):
         send(token, chat_id,
-             "👋 *Merhaba! Bakkal Fiyat Botuna hoş geldiniz!* 🛒\n\n"
+             "👋 <b>Merhaba! Bakkal Fiyat Botuna hoş geldiniz!</b> 🛒\n\n"
              "Ben size en güncel market fiyatlarını karşılaştırmalı olarak getiriyorum. "
              "Türkçe veya İngilizce yazabilirsiniz!\n\n"
-             "✏️ *Nasıl kullanılır?*\n"
+             "✏️ <b>Nasıl kullanılır?</b>\n"
              "Sadece ürün adını yazın, gerisini ben hallederim:\n\n"
-             "`süt`  `ekmek`  `yağ`  `şeker`  `çay`\n"
-             "`milk`  `bread`  `oil`  `cheese`  `eggs`\n\n"
-             "📋 *Komutlar:*\n"
+             "<code>süt</code>  <code>ekmek</code>  <code>yağ</code>  <code>şeker</code>  <code>çay</code>\n"
+             "<code>milk</code>  <code>bread</code>  <code>oil</code>  <code>cheese</code>  <code>eggs</code>\n\n"
+             "📋 <b>Komutlar:</b>\n"
              "/markets — Takip ettiğim marketler\n"
              "/son — Son güncellenen ürünler\n"
              "/help — Yardım\n\n"
-             "_Fiyatlar her sabah 07:00'de güncellenir_ ☀️")
+             "<i>Fiyatlar her sabah 07:00'de güncellenir</i> ☀️")
 
     elif lower in ("/help", "/help@bakkalbot"):
         send(token, chat_id,
-             "🤝 *Size nasıl yardımcı olabilirim?*\n\n"
+             "🤝 <b>Size nasıl yardımcı olabilirim?</b>\n\n"
              "Aklınızdaki ürünü yazmanız yeterli — Türkçe ya da İngilizce:\n\n"
-             "`süt` veya `milk` → tüm marketlerde süt fiyatları\n"
-             "`yağ` veya `oil` → ayçiçek, zeytinyağı ve daha fazlası\n"
-             "`200ml süt` → daha spesifik arama\n\n"
-             "📋 *Tüm komutlar:*\n"
-             "/fiyat `<ürün>` — Fiyat sorgula\n"
+             "<code>süt</code> veya <code>milk</code> → tüm marketlerde süt fiyatları\n"
+             "<code>yağ</code> veya <code>oil</code> → ayçiçek, zeytinyağı ve daha fazlası\n"
+             "<code>200ml süt</code> → daha spesifik arama\n\n"
+             "📋 <b>Tüm komutlar:</b>\n"
+             "/fiyat &lt;ürün&gt; — Fiyat sorgula\n"
              "/markets — Takip edilen marketler\n"
              "/son — Son güncellenen 10 ürün\n"
              "/help — Bu yardım mesajı\n\n"
-             "💬 _Herhangi bir sorunuz olursa yazmaktan çekinmeyin!_")
+             "💬 <i>Herhangi bir sorunuz olursa yazmaktan çekinmeyin!</i>")
 
     elif lower in ("/markets", "/markets@bakkalbot"):
         markets = get_all_markets(supabase)
@@ -520,24 +523,24 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
         if not query:
             send(token, chat_id,
                  "🤔 Hangi ürünü aramak istersiniz?\n\n"
-                 "Kullanım: `/fiyat süt`\n\n"
-                 "Örnekler: `süt`, `ekmek`, `yağ`, `şeker`")
+                 "Kullanım: <code>/fiyat süt</code>\n\n"
+                 "Örnekler: <code>süt</code>, <code>ekmek</code>, <code>yağ</code>, <code>şeker</code>")
             return
         rows, matched = search_prices(supabase, query)
         send(token, chat_id, build_price_reply(query, rows, matched))
 
     elif lower in ("merhaba", "selam", "hi", "hello", "hey", "sa", "slm"):
         send(token, chat_id,
-             "👋 *Merhaba!* Nasılsınız?\n\n"
+             "👋 <b>Merhaba!</b> Nasılsınız?\n\n"
              "Bugün hangi ürünün fiyatına bakmak istersiniz? "
              "Türkçe veya İngilizce yazabilirsiniz 😊\n\n"
-             "Örnek: `süt`, `ekmek`, `milk`, `bread`")
+             "Örnek: <code>süt</code>, <code>ekmek</code>, <code>milk</code>, <code>bread</code>")
 
     elif lower in ("teşekkür", "teşekkürler", "sağol", "sağolun",
                    "thanks", "thank you", "thx", "ty"):
         send(token, chat_id,
              "😊 Rica ederim! Başka bir ürün sormak ister misiniz?\n\n"
-             "`süt`  `ekmek`  `yağ`  `şeker`  `çay`")
+             "<code>süt</code>  <code>ekmek</code>  <code>yağ</code>  <code>şeker</code>  <code>çay</code>")
 
     elif lower in ("iyi günler", "güle güle", "bye", "görüşürüz"):
         send(token, chat_id,
