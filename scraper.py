@@ -5,7 +5,8 @@ scraper.py — Data fetching from four sources:
   3. essenjet.com via direct Playwright CSS extraction
   4. bizimtoptan.com.tr via direct Playwright CSS extraction
 
-Sources 1 & 2 return ProductRaw chunks fed to parser.py (OpenAI) for extraction.
+Source 1 returns structured dicts directly — no AI needed (JSON API).
+Source 2 returns ProductRaw chunks fed to parser.py (OpenAI) for extraction.
 Sources 3 & 4 return structured dicts directly — no AI parsing needed.
 """
 

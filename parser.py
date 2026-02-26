@@ -7,7 +7,6 @@ Sends Markdown/JSON content chunks and returns ProductData objects.
 
 import json
 import logging
-from typing import Optional
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -94,7 +93,7 @@ def parse_chunk(
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=2048,
+            max_tokens=4096,
         )
 
         raw_json = response.choices[0].message.content

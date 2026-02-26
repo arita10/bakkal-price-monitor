@@ -42,8 +42,10 @@ def load_config() -> dict:
     config["PRICE_DROP_THRESHOLD"] = float(
         os.environ.get("PRICE_DROP_THRESHOLD", "5.0")
     )
+    # Larger chunks = fewer OpenAI calls = lower cost.
+    # GPT-4o Mini context window is 128k tokens; 8000 chars ≈ 2000 tokens, well within limit.
     config["GEMINI_CHUNK_SIZE"] = int(
-        os.environ.get("GEMINI_CHUNK_SIZE", "2000")
+        os.environ.get("GEMINI_CHUNK_SIZE", "8000")
     )
     config["SHOP_LAT"] = float(os.environ.get("SHOP_LAT", "40.7569"))
     config["SHOP_LON"] = float(os.environ.get("SHOP_LON", "30.3783"))
