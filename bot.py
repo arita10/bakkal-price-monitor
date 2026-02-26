@@ -573,14 +573,14 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str, chat_id:
     - Matches reply language to the user's language
     - Returns plain text (no HTML tags)
     """
+    # Copy history so mutations don't affect the stored list before we're done
+    history = list(_chat_history.get(chat_id, []))
+
     try:
         # ── Step 1: Generate SQL with conversation context ───────────────────
-        history = _chat_history.get(chat_id, [])
-
-        # Build message list: system + history + current SQL request
         sql_messages = [
             {"role": "system", "content": _CHAT_SYSTEM},
-            *history,  # previous turns give context for follow-up questions
+            *history,
             {"role": "user", "content": (
                 f"User question: {user_question}\n\n"
                 "Translate any English product names to Turkish. "
@@ -600,20 +600,20 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str, chat_id:
         # Safety: only allow SELECT
         if not sql_query.upper().lstrip().startswith("SELECT"):
             logger.warning(f"AI returned non-SELECT query: {sql_query[:80]}")
-            return "Üzgünüm, yalnızca veri okuma sorguları desteklenmektedir. / Sorry, only read queries are supported."
+            return "Üzgünüm, yalnızca veri okuma sorguları desteklenmektedir."
 
-        # ── Step 2: Run query against Supabase via RPC ───────────────────────
+        # ── Step 2: Run query — RPC first, fallback to direct table query ────
         rows: list[dict] = []
         try:
             result = supabase.rpc("run_query", {"sql": sql_query}).execute()
             rows = result.data or []
+            logger.info(f"AI chat RPC: {len(rows)} rows")
         except Exception as rpc_exc:
-            logger.warning(f"RPC failed ({rpc_exc}), using fallback")
+            logger.warning(f"RPC failed ({rpc_exc!r}), using fallback search")
             rows = _fallback_query(supabase, user_question)
+            logger.info(f"AI chat fallback: {len(rows)} rows")
 
-        logger.info(f"AI chat rows: {len(rows)}")
-
-        # ── Step 3: Format friendly reply using conversation history ─────────
+        # ── Step 3: Format friendly reply ────────────────────────────────────
         rows_text = json.dumps(rows[:10], ensure_ascii=False, default=str)
 
         reply_messages = [
@@ -640,14 +640,19 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str, chat_id:
         if chat_id:
             history.append({"role": "user", "content": user_question})
             history.append({"role": "assistant", "content": reply})
-            # Keep only last N turns
             _chat_history[chat_id] = history[-_HISTORY_MAX_TURNS:]
 
         return reply
 
     except Exception as exc:
-        logger.error(f"chat_with_data error: {exc}")
-        return "Bir hata oluştu, lütfen tekrar deneyin. / Something went wrong, please try again."
+        logger.error(f"chat_with_data error ({type(exc).__name__}): {exc}", exc_info=True)
+        # Return a specific message depending on where it likely failed
+        err = str(exc).lower()
+        if "openai" in err or "api" in err or "auth" in err or "key" in err:
+            return "OpenAI API hatası oluştu. Lütfen daha sonra tekrar deneyin."
+        if "supabase" in err or "postgrest" in err or "connection" in err:
+            return "Veritabanı bağlantı hatası oluştu. Lütfen daha sonra tekrar deneyin."
+        return "Bir hata oluştu, lütfen tekrar deneyin."
 
 
 def _fallback_query(supabase, question: str) -> list[dict]:
