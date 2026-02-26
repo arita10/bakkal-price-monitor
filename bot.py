@@ -109,6 +109,33 @@ EN_TR_MAP: dict[str, list[str]] = {
     "napkin": ["peçete"],
     "paper towel": ["kağıt havlu"],
     "toilet paper": ["tuvalet kağıdı"],
+    # Frozen & snacks
+    "ice cream": ["dondurma"],
+    "frozen": ["dondurulmuş"],
+    "biscuit": ["bisküvi"],
+    "cookie": ["bisküvi", "kurabiye"],
+    "chips": ["cips"],
+    "cracker": ["kraker"],
+    "cake": ["pasta", "kek"],
+    # Condiments extended
+    "jam": ["reçel"],
+    "pickle": ["turşu"],
+    "sauce": ["sos"],
+    # Fruit extended
+    "grape": ["üzüm"],
+    "strawberry": ["çilek"],
+    "watermelon": ["karpuz"],
+    "melon": ["kavun"],
+    "pear": ["armut"],
+    # Household
+    "laundry": ["çamaşır"],
+    "bleach": ["çamaşır suyu"],
+    "sponge": ["sünger"],
+    "tissue": ["peçete", "mendil"],
+    # Baby
+    "diaper": ["bez"],
+    "nappy": ["bez"],
+    "wipe": ["ıslak mendil"],
 }
 
 # Turkish character substitutions for fuzzy expansion
@@ -259,8 +286,43 @@ def get_updates(token: str, offset: int) -> list[dict]:
 # Supabase queries
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _rank_relevance(product_name: str, term: str) -> int:
+    """
+    Score how well a product name matches the search term.
+    Lower score = more relevant (sort ascending).
+
+    0 — product name IS exactly the term (or starts with term + space)
+    1 — term appears as a whole word inside the name
+    2 — term appears at the start of the name (prefix)
+    3 — term appears anywhere (substring fallback)
+    """
+    name_lower = product_name.lower().strip()
+    term_lower = term.lower().strip()
+
+    # Exact match or "term <something>" e.g. "süt 1L"
+    if name_lower == term_lower or name_lower.startswith(term_lower + " "):
+        return 0
+
+    # Whole-word match: term surrounded by spaces or at boundaries
+    import re as _re2
+    if _re2.search(r'(?<!\w)' + _re2.escape(term_lower) + r'(?!\w)', name_lower):
+        return 1
+
+    # Prefix match: name starts with term
+    if name_lower.startswith(term_lower):
+        return 2
+
+    # Substring fallback
+    return 3
+
+
 def _fetch_by_term(supabase, term: str) -> list[dict]:
-    """Single ilike query against price_history, deduplicated by product_url."""
+    """
+    Query price_history with ILIKE, then re-rank results so that
+    whole-word matches (e.g. 'süt') appear before substring matches
+    (e.g. 'bisküvi' matching 'küvi'). If any score-0/1 results exist,
+    score-3 results are dropped entirely.
+    """
     response = (
         supabase.table("price_history")
         .select(
@@ -273,13 +335,29 @@ def _fetch_by_term(supabase, term: str) -> list[dict]:
         .execute()
     )
     rows = response.data or []
+
+    # Deduplicate by product_url
     seen: set[str] = set()
     unique: list[dict] = []
     for row in rows:
         key = row["product_url"]
         if key not in seen:
             seen.add(key)
+            row["_score"] = _rank_relevance(row["product_name"], term)
             unique.append(row)
+
+    # Sort by relevance score
+    unique.sort(key=lambda r: r["_score"])
+
+    # If we have good matches (score 0 or 1), drop pure substring noise (score 3)
+    best_score = unique[0]["_score"] if unique else 3
+    if best_score <= 1:
+        unique = [r for r in unique if r["_score"] <= 2]
+
+    # Remove internal score key before returning
+    for r in unique:
+        r.pop("_score", None)
+
     return unique
 
 
@@ -403,48 +481,74 @@ Columns:
 # English → Turkish product keyword map for the AI prompt
 _EN_TR_HINT = """
 English → Turkish product name translation (use Turkish in ILIKE):
-  milk → süt          | bread → ekmek       | oil/sunflower → yağ
-  egg/eggs → yumurta  | flour → un          | sugar → şeker
-  rice → pirinç       | pasta/noodle → makarna | cheese → peynir
-  butter → tereyağ    | tea → çay           | coffee → kahve
-  water → su          | juice → meyve suyu  | chicken → tavuk
-  meat/beef → et      | fish → balık        | tuna → ton
-  tomato → domates    | potato → patates    | onion → soğan
-  apple → elma        | banana → muz        | orange → portakal
-  salt → tuz          | yogurt → yoğurt     | honey → bal
-  olive oil → zeytinyağı | chocolate → çikolata | detergent → deterjan
+  milk → süt               | bread → ekmek          | oil/sunflower oil → yağ
+  egg/eggs → yumurta       | flour → un             | sugar → şeker
+  rice → pirinç            | pasta/noodle → makarna | cheese → peynir
+  butter → tereyağ         | tea → çay              | coffee → kahve
+  water → su               | juice → meyve suyu     | chicken → tavuk
+  meat/beef → et           | fish → balık           | tuna → ton
+  tomato → domates         | potato → patates       | onion → soğan
+  apple → elma             | banana → muz           | orange → portakal
+  salt → tuz               | yogurt → yoğurt        | honey → bal
+  olive oil → zeytinyağı   | chocolate → çikolata   | detergent → deterjan
+  ice cream → dondurma     | frozen → dondurulmuş   | cake → pasta
+  biscuit/cookie → bisküvi | chips/crisp → cips     | cracker → kraker
+  jam → reçel              | pickle → turşu         | sauce → sos
+  ketchup → ketçap         | mayonnaise → mayonez   | mustard → hardal
+  vinegar → sirke          | pepper → biber         | garlic → sarımsak
+  lemon → limon            | grape → üzüm           | strawberry → çilek
+  watermelon → karpuz      | melon → kavun          | pear → armut
+  shampoo → şampuan        | soap → sabun           | tissue → peçete
+  toilet paper → tuvalet kağıdı | paper towel → kağıt havlu
+  laundry → çamaşır       | bleach → çamaşır suyu  | sponge → sünger
+  baby → bebek             | diaper/nappy → bez     | wipe → ıslak mendil
 """
 
-_CHAT_SYSTEM = """You are a smart Turkish grocery price assistant with access to a price database.
-ALL product names in the database are in TURKISH. The user may write in English, Turkish, or with typos.
+_CHAT_SYSTEM = """You are Bakkal Asistan 🛒 — a warm, friendly grocery price helper for a small Turkish shop.
+You help users find the best prices across Turkish supermarkets (BIM, A101, SOK, Migros, etc.).
+
+=== PERSONALITY ===
+- Warm, helpful, like a knowledgeable friend at the market
+- Match the user's language: if they write in English → reply in English; Turkish → reply in Turkish
+- Keep replies concise but friendly — add a short helpful tip when relevant
+- Use light emojis naturally (🛒 💰 📉 ✅) but don't overdo it
 
 === TRANSLATION RULES (CRITICAL) ===
-If the user writes in English, translate to Turkish before searching.
+ALL product names in the database are in TURKISH. Always translate before searching.
 """ + _EN_TR_HINT + """
-For typos: infer what product they mean (e.g. "mlk" → süt, "bre" → ekmek, "sut" → süt).
-Turkish characters: ş=s, ç=c, ğ=g, ı=i, ö=o, ü=u — users often omit them.
+For typos/missing Turkish chars: infer the product (e.g. "sut"→süt, "ekmk"→ekmek, "yogurt"→yoğurt).
+Turkish chars: ş=s, ç=c, ğ=g, ı=i, ö=o, ü=u
 
 === SQL RULES ===
 Database schema:
 """ + _DB_SCHEMA + """
 - Always SELECT from price_history table.
-- ALWAYS use ILIKE with Turkish keywords: product_name ILIKE '%süt%'
-- For multiple possible translations, use OR: (product_name ILIKE '%süt%' OR product_name ILIKE '%sut%')
-- For "cheapest/en ucuz": ORDER BY current_price ASC LIMIT 5
-- For "most expensive/en pahalı": ORDER BY current_price DESC LIMIT 5
-- For "deals/indirim/fırsat": WHERE price_drop_pct > 0 ORDER BY price_drop_pct DESC LIMIT 10
-- For market comparison: GROUP BY market_name or filter by market_name ILIKE '%bim%'
-- For "latest/güncel": ORDER BY scraped_date DESC LIMIT 10
-- NEVER use DROP, INSERT, UPDATE, DELETE.
-- Limit to 10 rows unless user asks for more.
+- Use ILIKE with Turkish keywords: product_name ILIKE '%süt%'
+- For multiple translations use OR: (product_name ILIKE '%süt%' OR product_name ILIKE '%sut%')
+- "cheapest/en ucuz": ORDER BY current_price ASC LIMIT 5
+- "most expensive/en pahalı": ORDER BY current_price DESC LIMIT 5
+- "deals/indirim/fırsat": WHERE price_drop_pct > 0 ORDER BY price_drop_pct DESC LIMIT 10
+- market filter: market_name ILIKE '%bim%'
+- "latest/güncel": ORDER BY scraped_date DESC LIMIT 10
+- NEVER use DROP, INSERT, UPDATE, DELETE — SELECT only.
+- Default LIMIT 10.
 
 === REPLY RULES ===
-- Reply in Turkish, friendly and concise.
-- Format prices as Turkish: 12.99 → "12,99 TL"
-- Use bullet points (• or -).
-- If no results found, suggest similar product names.
-- Do NOT use HTML tags in your reply.
+- Match user's language (English question → English answer, Turkish → Turkish)
+- Format prices as Turkish style: 12.99 → "12,99 TL"
+- Use bullet points for lists
+- If results empty: kindly say the product wasn't found, mention what IS tracked
+  (süt, ekmek, yağ, şeker, çay, makarna, pirinç, peynir, yumurta, tavuk, et),
+  and suggest a similar product
+- NEVER invent prices — only use real data from query results
+- Do NOT use HTML tags — plain text only
+- End with a short helpful tip or follow-up suggestion when it makes sense
 """
+
+# Per-chat conversation history (last N turns) for context memory
+# Key: chat_id (int), Value: list of {"role": ..., "content": ...}
+_chat_history: dict[int, list[dict]] = {}
+_HISTORY_MAX_TURNS = 6  # keep last 6 messages (3 user + 3 assistant)
 
 
 def _strip_sql_fences(text: str) -> str:
@@ -460,26 +564,33 @@ def _strip_sql_fences(text: str) -> str:
     return text
 
 
-def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
+def chat_with_data(supabase, openai_client: OpenAI, user_question: str, chat_id: int = 0) -> str:
     """
-    Use GPT-4o Mini to convert a natural language question into SQL,
-    run it against Supabase, then format a friendly Turkish reply.
+    Use GPT-4o Mini to answer a natural language question about prices.
 
-    Handles English input, typos, and missing Turkish characters automatically.
-    Returns plain text (no HTML tags).
+    - Translates English/typos to Turkish for SQL search
+    - Keeps per-chat conversation history (last 6 messages) for follow-up questions
+    - Matches reply language to the user's language
+    - Returns plain text (no HTML tags)
     """
     try:
-        # Step 1: Generate SQL — GPT translates English/typos to Turkish ILIKE terms
+        # ── Step 1: Generate SQL with conversation context ───────────────────
+        history = _chat_history.get(chat_id, [])
+
+        # Build message list: system + history + current SQL request
+        sql_messages = [
+            {"role": "system", "content": _CHAT_SYSTEM},
+            *history,  # previous turns give context for follow-up questions
+            {"role": "user", "content": (
+                f"User question: {user_question}\n\n"
+                "Translate any English product names to Turkish. "
+                "Reply with ONLY the SQL SELECT query — no markdown, no explanation."
+            )},
+        ]
+
         sql_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _CHAT_SYSTEM},
-                {"role": "user", "content": (
-                    f"User question: {user_question}\n\n"
-                    "Translate any English product names to Turkish. "
-                    "Then reply with ONLY the SQL SELECT query — no markdown, no explanation."
-                )},
-            ],
+            messages=sql_messages,
             temperature=0.0,
             max_tokens=300,
         )
@@ -489,45 +600,54 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
         # Safety: only allow SELECT
         if not sql_query.upper().lstrip().startswith("SELECT"):
             logger.warning(f"AI returned non-SELECT query: {sql_query[:80]}")
-            return "❌ Yalnızca veri okuma sorguları desteklenmektedir."
+            return "Üzgünüm, yalnızca veri okuma sorguları desteklenmektedir. / Sorry, only read queries are supported."
 
-        # Step 2: Run query against Supabase via RPC
+        # ── Step 2: Run query against Supabase via RPC ───────────────────────
         rows: list[dict] = []
-        rpc_ok = False
         try:
             result = supabase.rpc("run_query", {"sql": sql_query}).execute()
             rows = result.data or []
-            rpc_ok = True
         except Exception as rpc_exc:
             logger.warning(f"RPC failed ({rpc_exc}), using fallback")
             rows = _fallback_query(supabase, user_question)
 
-        logger.info(f"AI chat rows: {len(rows)} (rpc_ok={rpc_ok})")
+        logger.info(f"AI chat rows: {len(rows)}")
 
-        # Step 3: Format results as friendly Turkish reply
+        # ── Step 3: Format friendly reply using conversation history ─────────
         rows_text = json.dumps(rows[:10], ensure_ascii=False, default=str)
+
+        reply_messages = [
+            {"role": "system", "content": _CHAT_SYSTEM},
+            *history,
+            {"role": "user", "content": (
+                f"User message: {user_question}\n\n"
+                f"Database results:\n{rows_text}\n\n"
+                "Reply naturally in the SAME language the user used. "
+                "Be warm and friendly. Format prices as '12,99 TL'. "
+                "Use bullet points for lists. No HTML tags."
+            )},
+        ]
+
         reply_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _CHAT_SYSTEM},
-                {"role": "user", "content": (
-                    f"User question: {user_question}\n\n"
-                    f"Database results (JSON, may be empty):\n{rows_text}\n\n"
-                    "Write a friendly, concise Turkish reply based on these results.\n"
-                    "- Format prices as '12,99 TL'\n"
-                    "- Use bullet points\n"
-                    "- If empty, say no data found and suggest alternatives\n"
-                    "- Do NOT use HTML tags — plain text only"
-                )},
-            ],
-            temperature=0.3,
+            messages=reply_messages,
+            temperature=0.5,
             max_tokens=600,
         )
-        return reply_response.choices[0].message.content.strip()
+        reply = reply_response.choices[0].message.content.strip()
+
+        # ── Step 4: Save to conversation history ─────────────────────────────
+        if chat_id:
+            history.append({"role": "user", "content": user_question})
+            history.append({"role": "assistant", "content": reply})
+            # Keep only last N turns
+            _chat_history[chat_id] = history[-_HISTORY_MAX_TURNS:]
+
+        return reply
 
     except Exception as exc:
         logger.error(f"chat_with_data error: {exc}")
-        return "❌ Bir hata oluştu. Lütfen tekrar deneyin."
+        return "Bir hata oluştu, lütfen tekrar deneyin. / Something went wrong, please try again."
 
 
 def _fallback_query(supabase, question: str) -> list[dict]:
@@ -866,7 +986,7 @@ def handle_message(token: str, supabase, openai_client: OpenAI, chat_id: int, te
                  "<code>/sor BİM'de ekmek kaç lira?</code>")
             return
         send(token, chat_id, "🤖 Düşünüyorum...")
-        reply = chat_with_data(supabase, openai_client, question)
+        reply = chat_with_data(supabase, openai_client, question, chat_id)
         send(token, chat_id, f"🤖 <b>AI Asistan:</b>\n\n{_esc(reply)}")
 
     elif lower in ("/sor", "/sor@bakkalbot"):
