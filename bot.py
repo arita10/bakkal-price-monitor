@@ -400,72 +400,111 @@ Columns:
   product_url   TEXT       — product page URL
 """
 
-_CHAT_SYSTEM = """You are a helpful Turkish grocery price assistant.
-The user asks questions about product prices stored in a Supabase database.
+# English → Turkish product keyword map for the AI prompt
+_EN_TR_HINT = """
+English → Turkish product name translation (use Turkish in ILIKE):
+  milk → süt          | bread → ekmek       | oil/sunflower → yağ
+  egg/eggs → yumurta  | flour → un          | sugar → şeker
+  rice → pirinç       | pasta/noodle → makarna | cheese → peynir
+  butter → tereyağ    | tea → çay           | coffee → kahve
+  water → su          | juice → meyve suyu  | chicken → tavuk
+  meat/beef → et      | fish → balık        | tuna → ton
+  tomato → domates    | potato → patates    | onion → soğan
+  apple → elma        | banana → muz        | orange → portakal
+  salt → tuz          | yogurt → yoğurt     | honey → bal
+  olive oil → zeytinyağı | chocolate → çikolata | detergent → deterjan
+"""
 
-Your job — TWO steps:
-1. Write a SQL SELECT query to answer the question (PostgreSQL syntax).
-   - Always use the price_history table.
-   - Limit results to 10 rows unless asked for more.
-   - Use ILIKE for product name searches (e.g. product_name ILIKE '%süt%').
-   - For "cheapest" use ORDER BY current_price ASC.
-   - For "most expensive" use ORDER BY current_price DESC.
-   - For "best deals/fırsatlar" use ORDER BY price_drop_pct DESC WHERE price_drop_pct > 0.
-   - For "latest/en güncel" add ORDER BY scraped_date DESC.
-   - Never use DROP, INSERT, UPDATE, DELETE — SELECT only.
+_CHAT_SYSTEM = """You are a smart Turkish grocery price assistant with access to a price database.
+ALL product names in the database are in TURKISH. The user may write in English, Turkish, or with typos.
 
-2. After receiving the query result, write a friendly Turkish reply.
-   - Format prices as Turkish style: 12.99 → "12,99 TL"
-   - Be concise, use bullet points.
-   - If no results, say so kindly.
+=== TRANSLATION RULES (CRITICAL) ===
+If the user writes in English, translate to Turkish before searching.
+""" + _EN_TR_HINT + """
+For typos: infer what product they mean (e.g. "mlk" → süt, "bre" → ekmek, "sut" → süt).
+Turkish characters: ş=s, ç=c, ğ=g, ı=i, ö=o, ü=u — users often omit them.
 
+=== SQL RULES ===
 Database schema:
-""" + _DB_SCHEMA
+""" + _DB_SCHEMA + """
+- Always SELECT from price_history table.
+- ALWAYS use ILIKE with Turkish keywords: product_name ILIKE '%süt%'
+- For multiple possible translations, use OR: (product_name ILIKE '%süt%' OR product_name ILIKE '%sut%')
+- For "cheapest/en ucuz": ORDER BY current_price ASC LIMIT 5
+- For "most expensive/en pahalı": ORDER BY current_price DESC LIMIT 5
+- For "deals/indirim/fırsat": WHERE price_drop_pct > 0 ORDER BY price_drop_pct DESC LIMIT 10
+- For market comparison: GROUP BY market_name or filter by market_name ILIKE '%bim%'
+- For "latest/güncel": ORDER BY scraped_date DESC LIMIT 10
+- NEVER use DROP, INSERT, UPDATE, DELETE.
+- Limit to 10 rows unless user asks for more.
+
+=== REPLY RULES ===
+- Reply in Turkish, friendly and concise.
+- Format prices as Turkish: 12.99 → "12,99 TL"
+- Use bullet points (• or -).
+- If no results found, suggest similar product names.
+- Do NOT use HTML tags in your reply.
+"""
+
+
+def _strip_sql_fences(text: str) -> str:
+    """Remove markdown code fences from GPT output."""
+    text = text.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        # parts[1] is the content between first pair of fences
+        inner = parts[1] if len(parts) > 1 else text
+        if inner.lower().startswith("sql"):
+            inner = inner[3:]
+        return inner.strip()
+    return text
 
 
 def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
     """
     Use GPT-4o Mini to convert a natural language question into SQL,
     run it against Supabase, then format a friendly Turkish reply.
-    Returns the reply text (plain text, no HTML tags).
+
+    Handles English input, typos, and missing Turkish characters automatically.
+    Returns plain text (no HTML tags).
     """
     try:
-        # Step 1: Ask GPT to generate SQL
+        # Step 1: Generate SQL — GPT translates English/typos to Turkish ILIKE terms
         sql_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": _CHAT_SYSTEM},
                 {"role": "user", "content": (
-                    f"Question: {user_question}\n\n"
-                    "Reply with ONLY the SQL query, nothing else. No markdown, no explanation."
+                    f"User question: {user_question}\n\n"
+                    "Translate any English product names to Turkish. "
+                    "Then reply with ONLY the SQL SELECT query — no markdown, no explanation."
                 )},
             ],
             temperature=0.0,
-            max_tokens=256,
+            max_tokens=300,
         )
-        sql_query = sql_response.choices[0].message.content.strip()
-        # Strip markdown code fences if GPT wraps in ```sql ... ```
-        if sql_query.startswith("```"):
-            sql_query = sql_query.split("```")[1]
-            if sql_query.lower().startswith("sql"):
-                sql_query = sql_query[3:]
-            sql_query = sql_query.strip()
-
-        logger.info(f"AI chat SQL: {sql_query[:120]}")
+        sql_query = _strip_sql_fences(sql_response.choices[0].message.content)
+        logger.info(f"AI chat SQL: {sql_query[:150]}")
 
         # Safety: only allow SELECT
         if not sql_query.upper().lstrip().startswith("SELECT"):
-            return "❌ Yalnızca okuma sorguları desteklenmektedir."
+            logger.warning(f"AI returned non-SELECT query: {sql_query[:80]}")
+            return "❌ Yalnızca veri okuma sorguları desteklenmektedir."
 
-        # Step 2: Run query against Supabase via RPC (raw SQL)
+        # Step 2: Run query against Supabase via RPC
+        rows: list[dict] = []
+        rpc_ok = False
         try:
             result = supabase.rpc("run_query", {"sql": sql_query}).execute()
             rows = result.data or []
-        except Exception:
-            # Fallback: if RPC not available, try direct table queries
+            rpc_ok = True
+        except Exception as rpc_exc:
+            logger.warning(f"RPC failed ({rpc_exc}), using fallback")
             rows = _fallback_query(supabase, user_question)
 
-        # Step 3: Ask GPT to format the result as a friendly Turkish reply
+        logger.info(f"AI chat rows: {len(rows)} (rpc_ok={rpc_ok})")
+
+        # Step 3: Format results as friendly Turkish reply
         rows_text = json.dumps(rows[:10], ensure_ascii=False, default=str)
         reply_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -473,14 +512,16 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
                 {"role": "system", "content": _CHAT_SYSTEM},
                 {"role": "user", "content": (
                     f"User question: {user_question}\n\n"
-                    f"Query result (JSON):\n{rows_text}\n\n"
-                    "Now write a friendly, concise Turkish reply. "
-                    "Format prices as '12,99 TL'. Use bullet points. "
-                    "Do NOT use HTML tags — plain text only."
+                    f"Database results (JSON, may be empty):\n{rows_text}\n\n"
+                    "Write a friendly, concise Turkish reply based on these results.\n"
+                    "- Format prices as '12,99 TL'\n"
+                    "- Use bullet points\n"
+                    "- If empty, say no data found and suggest alternatives\n"
+                    "- Do NOT use HTML tags — plain text only"
                 )},
             ],
             temperature=0.3,
-            max_tokens=512,
+            max_tokens=600,
         )
         return reply_response.choices[0].message.content.strip()
 
@@ -491,14 +532,22 @@ def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
 
 def _fallback_query(supabase, question: str) -> list[dict]:
     """
-    Simple keyword-based fallback if Supabase RPC is not configured.
-    Extracts keywords from the question and runs an ilike search.
+    Fallback when RPC is unavailable: uses the EN_TR_MAP already defined in the bot
+    to translate English keywords, then runs an ilike search.
     """
-    keywords = [w for w in question.lower().split() if len(w) >= 3
-                and w not in {"için", "nedir", "hangi", "kadar", "fiyat", "ürün"}]
-    if not keywords:
+    _skip = {"için", "nedir", "hangi", "kadar", "fiyat", "ürün", "what", "how",
+             "much", "does", "cost", "price", "the", "is", "are", "show", "me"}
+    words = [w for w in question.lower().split() if len(w) >= 2 and w not in _skip]
+    if not words:
         return []
-    term = keywords[0]
+
+    # Try to translate English word first using EN_TR_MAP
+    term = words[0]
+    for en_key, tr_vals in EN_TR_MAP.items():
+        if term in en_key or en_key in term:
+            term = tr_vals[0]
+            break
+
     try:
         response = (
             supabase.table("price_history")
