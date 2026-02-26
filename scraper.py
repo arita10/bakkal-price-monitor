@@ -59,6 +59,13 @@ CIMRI_TARGET_URLS = [
     "https://www.cimri.com/market",
 ]
 
+# ── Target pages for bizimtoptan.com.tr scraping ─────────────────────────────
+# JS-rendered product grid — scraped via Playwright (same as Essen JET)
+BIZIMTOPTAN_TARGET_URLS = [
+    "https://www.bizimtoptan.com.tr/kampanyalar",
+    "https://www.bizimtoptan.com.tr/indirimli-urunler",
+]
+
 # ── Target pages for essenjet.com Crawl4AI scraping ──────────────────────────
 # Real category URLs discovered via browser inspection (ID/slug pattern)
 ESSEN_TARGET_URLS = [
@@ -375,6 +382,99 @@ async def scrape_essen(_config: dict) -> list[ProductRaw]:
     which main.py calls separately — no raw chunks needed here.
     """
     return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bizimtoptan.com.tr — Direct Playwright scrape (no AI parsing needed)
+# JS-rendered product cards extracted via confirmed CSS selectors.
+# Returns dicts with keys: product_name, current_price, market_name, product_url
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def scrape_bizimtoptan_direct() -> list:
+    """
+    Scrape bizimtoptan.com.tr campaign/discount pages using Playwright.
+    Products are rendered via jQuery tmpl — static fetch won't work.
+    Selectors confirmed: .product-box-container, .productbox-name,
+    .product-price / .campaign-price, and product href links.
+    Returns list of dicts (same shape as scrape_essen_direct).
+    """
+    products = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            extra_http_headers={"Accept-Language": "tr-TR,tr;q=0.9"},
+        )
+
+        for url in BIZIMTOPTAN_TARGET_URLS:
+            try:
+                logger.info(f"BizimToptan: scraping {url}")
+                page = await context.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=60_000)
+                await asyncio.sleep(3)  # Allow tmpl rendering to complete
+
+                cards = await page.query_selector_all(".product-box-container")
+                if not cards:
+                    logger.warning(f"BizimToptan: no product cards at {url}")
+                    await page.close()
+                    continue
+
+                page_count = 0
+                for card in cards:
+                    try:
+                        name_el  = await card.query_selector(".productbox-name")
+                        # Prefer campaign (discounted) price, fall back to regular
+                        price_el = await card.query_selector(".campaign-price")
+                        if not price_el:
+                            price_el = await card.query_selector(".product-price")
+                        link_el  = await card.query_selector("a[href]")
+
+                        if not name_el or not price_el:
+                            continue
+
+                        name = (await name_el.inner_text()).strip()
+                        price_raw = (await price_el.inner_text()).strip()
+                        price = _parse_tr_price(price_raw)
+
+                        if not name or price <= 0:
+                            continue
+
+                        href = await link_el.get_attribute("href") if link_el else ""
+                        if href and not href.startswith("http"):
+                            product_url = f"https://www.bizimtoptan.com.tr/{href.lstrip('/')}"
+                        else:
+                            product_url = href or url
+
+                        products.append({
+                            "product_name": name,
+                            "current_price": price,
+                            "market_name": "Bizim Toptan",
+                            "product_url": product_url,
+                        })
+                        page_count += 1
+
+                    except Exception as card_exc:
+                        logger.debug(f"BizimToptan card error: {card_exc}")
+
+                logger.info(f"BizimToptan: {page_count} products from {url}")
+                await page.close()
+                await asyncio.sleep(2)
+
+            except Exception as exc:
+                logger.error(f"BizimToptan page error for {url}: {repr(exc)}")
+
+        await browser.close()
+
+    logger.info(f"BizimToptan scrape complete: {len(products)} total products")
+    return products
 
 
 # ─────────────────────────────────────────────────────────────────────────────

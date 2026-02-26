@@ -22,7 +22,7 @@ from supabase import create_client
 from alerts import send_daily_summary, send_price_drop_alert
 from config import load_config
 from parser import ProductData, build_gemini_client, parse_chunk
-from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen_direct
+from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen_direct, scrape_bizimtoptan_direct
 from storage import get_last_price, upsert_price
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,9 +97,23 @@ async def run() -> None:
             ))
             essen_added += 1
 
+    # ── 6c. Scrape bizimtoptan.com.tr directly (JS-rendered, no AI needed) ───
+    bizim_dicts = await scrape_bizimtoptan_direct()
+    bizim_added = 0
+    for d in bizim_dicts:
+        if d["product_url"] not in seen_urls and d["current_price"] > 0:
+            seen_urls.add(d["product_url"])
+            unique_products.append(ProductData(
+                product_name=d["product_name"],
+                current_price=d["current_price"],
+                market_name=d["market_name"],
+                product_url=d["product_url"],
+            ))
+            bizim_added += 1
+
     logger.info(
         f"After deduplication: {len(unique_products)} unique product(s) "
-        f"(incl. {essen_added} from Essen JET)"
+        f"(incl. {essen_added} from Essen JET, {bizim_added} from Bizim Toptan)"
     )
 
     # ── 7. Compare, alert, upsert ────────────────────────────────────────────
