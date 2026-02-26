@@ -715,11 +715,15 @@ def run_bot() -> None:
     except Exception:
         offset = 0
 
+    global _bot_alive
+    _bot_alive = True
+
     while True:
         try:
             updates = get_updates(token, offset)
         except KeyboardInterrupt:
             logger.info("Bot stopped by user.")
+            _bot_alive = False
             break
         except Exception as exc:
             logger.error(f"Polling error: {exc}")
@@ -755,11 +759,15 @@ def run_bot() -> None:
 # Minimal HTTP server — required by Render Web Service to bind a port
 # ─────────────────────────────────────────────────────────────────────────────
 
+_bot_alive = False  # Set True once polling loop is running
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OK")
+        status = b"OK - bot alive" if _bot_alive else b"STARTING"
+        self.wfile.write(status)
 
     def log_message(self, format, *args):
         pass  # Suppress HTTP access logs
@@ -792,5 +800,14 @@ if __name__ == "__main__":
     # Self-ping to prevent Render free tier sleep
     t2 = threading.Thread(target=self_ping, daemon=True)
     t2.start()
-    # Run Telegram bot on main thread
-    run_bot()
+    # Run Telegram bot on main thread — restart automatically on any crash
+    while True:
+        try:
+            run_bot()
+        except KeyboardInterrupt:
+            logger.info("Bot shut down by user.")
+            break
+        except Exception as exc:
+            logger.error(f"run_bot() crashed: {exc} — restarting in 10 s")
+            _bot_alive = False
+            time.sleep(10)
