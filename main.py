@@ -70,8 +70,8 @@ async def run() -> None:
         logger.debug(f"Parsing chunk {i}/{len(raw_items)} [{raw.source}]")
         products = parse_chunk(raw, gemini_model)
         all_products.extend(products)
-        # Gemini 1.5 Flash free tier: 15 RPM → 4-second gap keeps us safe
-        await asyncio.sleep(4.0)
+        # OpenAI paid tier: ~500 RPM limit — 0.5 s gap is safe and fast
+        await asyncio.sleep(0.5)
 
     logger.info(f"OpenAI extracted {len(all_products)} product(s) total")
 

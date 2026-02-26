@@ -16,7 +16,7 @@ jobs:
   price-check:
     name: Run Price Monitor
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     env:
       # Secrets set in: Settings > Secrets and variables > Actions > Secrets
