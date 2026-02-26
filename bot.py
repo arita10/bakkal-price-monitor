@@ -214,10 +214,17 @@ def expand_query(raw: str) -> list[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def tg(token: str, method: str, **kwargs) -> dict:
-    """Call a Telegram Bot API method. Returns the JSON response."""
+    """Call a Telegram Bot API method. Returns the JSON response.
+
+    For getUpdates long-poll calls, timeout kwarg is the Telegram server-wait
+    seconds. The HTTP request timeout must be larger — we add 10 s headroom.
+    """
     url = TELEGRAM_API.format(token=token, method=method)
+    # Use server-side timeout + 10 s as the HTTP socket timeout
+    server_wait = kwargs.get("timeout", 0)
+    http_timeout = max(30, server_wait + 10)
     try:
-        resp = requests.post(url, json=kwargs, timeout=35)
+        resp = requests.post(url, json=kwargs, timeout=http_timeout)
         return resp.json()
     except Exception as exc:
         logger.error(f"Telegram API error [{method}]: {exc}")
@@ -768,7 +775,7 @@ def start_health_server():
 def self_ping():
     """Ping own health endpoint every 10 minutes to prevent Render free tier sleep."""
     port = int(os.environ.get("PORT", 10000))
-    url = f"http://0.0.0.0:{port}/"
+    url = f"http://127.0.0.1:{port}/"
     while True:
         time.sleep(600)  # 10 minutes
         try:
