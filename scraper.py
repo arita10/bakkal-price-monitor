@@ -456,7 +456,23 @@ async def scrape_bizimtoptan_direct() -> list:
                 logger.info(f"BizimToptan: scraping {url}")
                 page = await context.new_page()
                 await page.goto(url, wait_until="networkidle", timeout=60_000)
-                await asyncio.sleep(3)  # Allow tmpl rendering to complete
+
+                # Wait for jQuery tmpl to render real product names.
+                # The template placeholder is "${item.label}" — we wait until
+                # at least one .productbox-name contains a real (non-template) string.
+                try:
+                    await page.wait_for_function(
+                        """() => {
+                            const els = document.querySelectorAll('.productbox-name');
+                            return Array.from(els).some(
+                                el => el.innerText && !el.innerText.includes('${')
+                            );
+                        }""",
+                        timeout=15_000,
+                    )
+                except Exception:
+                    logger.warning(f"BizimToptan: tmpl render timeout at {url}, trying anyway")
+                await asyncio.sleep(2)
 
                 cards = await page.query_selector_all(".product-box-container")
                 if not cards:
@@ -479,12 +495,20 @@ async def scrape_bizimtoptan_direct() -> list:
 
                         name = (await name_el.inner_text()).strip()
                         price_raw = (await price_el.inner_text()).strip()
+
+                        # Skip unrendered template placeholders
+                        if "${" in name or "${" in price_raw:
+                            continue
+
                         price = _parse_tr_price(price_raw)
 
                         if not name or price <= 0:
                             continue
 
                         href = await link_el.get_attribute("href") if link_el else ""
+                        # Skip template placeholder hrefs
+                        if href and "${" in href:
+                            href = ""
                         if href and not href.startswith("http"):
                             product_url = f"https://www.bizimtoptan.com.tr/{href.lstrip('/')}"
                         else:
