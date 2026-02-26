@@ -489,7 +489,9 @@ async def scrape_bizimtoptan_direct() -> list:
                         price_el = await card.query_selector(".campaign-price")
                         if not price_el:
                             price_el = await card.query_selector(".product-price")
-                        link_el  = await card.query_selector("a[href]")
+                        # Use a.product-item — the real product link.
+                        # a[href] picks up the wishlist button (href="javascript:;") first.
+                        link_el  = await card.query_selector("a.product-item")
 
                         if not name_el or not price_el:
                             continue
@@ -507,8 +509,8 @@ async def scrape_bizimtoptan_direct() -> list:
                             continue
 
                         href = await link_el.get_attribute("href") if link_el else ""
-                        # Skip template placeholder hrefs
-                        if href and "${" in href:
+                        # Skip template placeholder hrefs and javascript: anchors
+                        if href and ("${" in href or href.startswith("javascript")):
                             href = ""
                         if href and not href.startswith("http"):
                             product_url = f"https://www.bizimtoptan.com.tr/{href.lstrip('/')}"
