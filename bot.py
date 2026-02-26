@@ -15,6 +15,7 @@ Commands:
   /son          — Show the 10 most recently scraped products
 """
 
+import json
 import logging
 import os
 import threading
@@ -22,6 +23,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
+from openai import OpenAI
 from supabase import create_client
 
 from config import load_config
@@ -383,6 +385,135 @@ def get_price_history(supabase, product_url: str, days: int = 7) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AI Chat — natural language questions answered from Supabase data
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DB_SCHEMA = """
+Table: price_history
+Columns:
+  product_name  TEXT       — full product name in Turkish
+  market_name   TEXT       — retailer (BIM, A101, SOK, Migros, CarrefourSA, Hakmar, Tarim Kredi, Essen JET, Bizim Toptan)
+  current_price NUMERIC    — price in Turkish Lira
+  previous_price NUMERIC   — price on previous scrape (nullable)
+  price_drop_pct NUMERIC   — % drop vs previous price (positive = cheaper, nullable)
+  scraped_date  DATE       — date this price was recorded (YYYY-MM-DD)
+  product_url   TEXT       — product page URL
+"""
+
+_CHAT_SYSTEM = """You are a helpful Turkish grocery price assistant.
+The user asks questions about product prices stored in a Supabase database.
+
+Your job — TWO steps:
+1. Write a SQL SELECT query to answer the question (PostgreSQL syntax).
+   - Always use the price_history table.
+   - Limit results to 10 rows unless asked for more.
+   - Use ILIKE for product name searches (e.g. product_name ILIKE '%süt%').
+   - For "cheapest" use ORDER BY current_price ASC.
+   - For "most expensive" use ORDER BY current_price DESC.
+   - For "best deals/fırsatlar" use ORDER BY price_drop_pct DESC WHERE price_drop_pct > 0.
+   - For "latest/en güncel" add ORDER BY scraped_date DESC.
+   - Never use DROP, INSERT, UPDATE, DELETE — SELECT only.
+
+2. After receiving the query result, write a friendly Turkish reply.
+   - Format prices as Turkish style: 12.99 → "12,99 TL"
+   - Be concise, use bullet points.
+   - If no results, say so kindly.
+
+Database schema:
+""" + _DB_SCHEMA
+
+
+def chat_with_data(supabase, openai_client: OpenAI, user_question: str) -> str:
+    """
+    Use GPT-4o Mini to convert a natural language question into SQL,
+    run it against Supabase, then format a friendly Turkish reply.
+    Returns the reply text (plain text, no HTML tags).
+    """
+    try:
+        # Step 1: Ask GPT to generate SQL
+        sql_response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _CHAT_SYSTEM},
+                {"role": "user", "content": (
+                    f"Question: {user_question}\n\n"
+                    "Reply with ONLY the SQL query, nothing else. No markdown, no explanation."
+                )},
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        sql_query = sql_response.choices[0].message.content.strip()
+        # Strip markdown code fences if GPT wraps in ```sql ... ```
+        if sql_query.startswith("```"):
+            sql_query = sql_query.split("```")[1]
+            if sql_query.lower().startswith("sql"):
+                sql_query = sql_query[3:]
+            sql_query = sql_query.strip()
+
+        logger.info(f"AI chat SQL: {sql_query[:120]}")
+
+        # Safety: only allow SELECT
+        if not sql_query.upper().lstrip().startswith("SELECT"):
+            return "❌ Yalnızca okuma sorguları desteklenmektedir."
+
+        # Step 2: Run query against Supabase via RPC (raw SQL)
+        try:
+            result = supabase.rpc("run_query", {"sql": sql_query}).execute()
+            rows = result.data or []
+        except Exception:
+            # Fallback: if RPC not available, try direct table queries
+            rows = _fallback_query(supabase, user_question)
+
+        # Step 3: Ask GPT to format the result as a friendly Turkish reply
+        rows_text = json.dumps(rows[:10], ensure_ascii=False, default=str)
+        reply_response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _CHAT_SYSTEM},
+                {"role": "user", "content": (
+                    f"User question: {user_question}\n\n"
+                    f"Query result (JSON):\n{rows_text}\n\n"
+                    "Now write a friendly, concise Turkish reply. "
+                    "Format prices as '12,99 TL'. Use bullet points. "
+                    "Do NOT use HTML tags — plain text only."
+                )},
+            ],
+            temperature=0.3,
+            max_tokens=512,
+        )
+        return reply_response.choices[0].message.content.strip()
+
+    except Exception as exc:
+        logger.error(f"chat_with_data error: {exc}")
+        return "❌ Bir hata oluştu. Lütfen tekrar deneyin."
+
+
+def _fallback_query(supabase, question: str) -> list[dict]:
+    """
+    Simple keyword-based fallback if Supabase RPC is not configured.
+    Extracts keywords from the question and runs an ilike search.
+    """
+    keywords = [w for w in question.lower().split() if len(w) >= 3
+                and w not in {"için", "nedir", "hangi", "kadar", "fiyat", "ürün"}]
+    if not keywords:
+        return []
+    term = keywords[0]
+    try:
+        response = (
+            supabase.table("price_history")
+            .select("product_name, market_name, current_price, previous_price, price_drop_pct, scraped_date")
+            .ilike("product_name", f"%{term}%")
+            .order("current_price", desc=False)
+            .limit(10)
+            .execute()
+        )
+        return response.data or []
+    except Exception:
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Response formatters
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -595,7 +726,7 @@ def _suggestion_line(matched_term: str) -> str:
 # Message handler
 # ─────────────────────────────────────────────────────────────────────────────
 
-def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
+def handle_message(token: str, supabase, openai_client: OpenAI, chat_id: int, text: str) -> None:
     """Route an incoming message to the right handler."""
     text = text.strip()
     lower = text.lower()
@@ -610,6 +741,7 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
              "<code>süt</code>  <code>ekmek</code>  <code>yağ</code>  <code>şeker</code>  <code>çay</code>\n"
              "<code>milk</code>  <code>bread</code>  <code>oil</code>  <code>cheese</code>  <code>eggs</code>\n\n"
              "📋 <b>Komutlar:</b>\n"
+             "/sor &lt;soru&gt; — AI asistana herhangi bir soru sor 🤖\n"
              "/firsat — Bugünün en iyi fırsatları 🔥\n"
              "/markets — Takip ettiğim marketler\n"
              "/son — Son güncellenen ürünler\n"
@@ -624,6 +756,7 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
              "<code>yağ</code> veya <code>oil</code> → ayçiçek, zeytinyağı ve daha fazlası\n"
              "<code>200ml süt</code> → daha spesifik arama\n\n"
              "📋 <b>Tüm komutlar:</b>\n"
+             "/sor &lt;soru&gt; — AI asistana herhangi bir soru sor 🤖\n"
              "/fiyat &lt;ürün&gt; — Fiyat sorgula\n"
              "/firsat — Bugünün en iyi fırsatları\n"
              "/markets — Takip edilen marketler\n"
@@ -672,6 +805,29 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
         send(token, chat_id,
              "👋 İyi günler! Fiyat karşılaştırması için tekrar bekleriz 🛒")
 
+    elif lower.startswith("/sor ") or lower.startswith("/sor@"):
+        # /sor <natural language question> — AI-powered chat
+        question = text[4:].strip() if lower.startswith("/sor ") else text.split(" ", 1)[1].strip() if " " in text else ""
+        if not question:
+            send(token, chat_id,
+                 "🤖 <b>AI Asistan</b>\n\n"
+                 "Bana herhangi bir soru sorabilirsiniz:\n\n"
+                 "<code>/sor en ucuz süt hangi markette?</code>\n"
+                 "<code>/sor bugün hangi ürünlerde indirim var?</code>\n"
+                 "<code>/sor BİM'de ekmek kaç lira?</code>")
+            return
+        send(token, chat_id, "🤖 Düşünüyorum...")
+        reply = chat_with_data(supabase, openai_client, question)
+        send(token, chat_id, f"🤖 <b>AI Asistan:</b>\n\n{_esc(reply)}")
+
+    elif lower in ("/sor", "/sor@bakkalbot"):
+        send(token, chat_id,
+             "🤖 <b>AI Asistan</b>\n\n"
+             "Bana herhangi bir soru sorabilirsiniz:\n\n"
+             "<code>/sor en ucuz süt hangi markette?</code>\n"
+             "<code>/sor bugün hangi ürünlerde indirim var?</code>\n"
+             "<code>/sor BİM'de ekmek kaç lira?</code>")
+
     elif lower.startswith("/"):
         send(token, chat_id,
              "🤔 Bu komutu tanımıyorum.\n\n"
@@ -693,6 +849,7 @@ def run_bot() -> None:
     config = load_config()
     token = config["TELEGRAM_BOT_TOKEN"]
     supabase = create_client(config["SUPABASE_URL"], config["SUPABASE_KEY"])
+    openai_client = OpenAI(api_key=config["OPENAI_API_KEY"])
 
     logger.info("=== Bakkal Price Bot starting (long-poll mode) ===")
 
@@ -746,7 +903,7 @@ def run_bot() -> None:
             logger.info(f"Message from @{username} ({chat_id}): {text!r}")
 
             try:
-                handle_message(token, supabase, chat_id, text)
+                handle_message(token, supabase, openai_client, chat_id, text)
             except Exception as exc:
                 logger.error(f"handle_message error: {exc}")
                 try:
