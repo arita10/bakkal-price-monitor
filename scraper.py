@@ -10,7 +10,6 @@ Sources 3 & 4 return structured dicts directly — no AI parsing needed.
 """
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 
@@ -99,23 +98,44 @@ class ProductRaw:
 # marketfiyati.org.tr — REST API
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Map of marketAdi API values → display names
+_MARKET_NAME_MAP = {
+    "bim":          "BIM",
+    "a101":         "A101",
+    "sok":          "SOK",
+    "migros":       "Migros",
+    "carrefoursa":  "CarrefourSA",
+    "hakmar":       "Hakmar",
+    "tarim_kredi":  "Tarım Kredi",
+    "tarım_kredi":  "Tarım Kredi",
+    "onur":         "Onur Market",
+    "metro":        "Metro",
+    "macrocenter":  "Macrocenter",
+}
+
+
+def _normalize_market(raw: str) -> str:
+    """Convert API market name to display name."""
+    return _MARKET_NAME_MAP.get(raw.lower().strip(), raw.strip().title())
+
+
 def fetch_marketfiyati_keyword(
     keyword: str,
     lat: float,
     lon: float,
-    chunk_size: int,
-) -> list[ProductRaw]:
+) -> list[dict]:
     """
     Query marketfiyati.org.tr API for a single product keyword.
-    Returns a list of ProductRaw objects (one per chunk of the JSON response).
-    Returns [] on any network or HTTP error.
+    Parses the JSON response directly — no AI needed.
+    Returns a list of dicts with keys: product_name, current_price,
+    market_name, product_url. Returns [] on any error.
     """
     payload = {
         "keywords": keyword,
         "latitude": lat,
         "longitude": lon,
-        "distance": 50,   # km radius — captures all major Turkish chains
-        "size": 100,      # results per keyword (max for broader coverage)
+        "distance": 50,
+        "size": 100,
     }
     headers = {
         "Content-Type": "application/json",
@@ -132,36 +152,51 @@ def fetch_marketfiyati_keyword(
         )
         response.raise_for_status()
         data = response.json()
-        content_str = json.dumps(data, ensure_ascii=False, indent=2)
-        chunks = chunk_text(content_str, chunk_size)
-        result = [
-            ProductRaw(
-                source="marketfiyati_api",
-                content=chunk,
-                source_url=MARKETFIYATI_API_URL,
-            )
-            for chunk in chunks
-        ]
-        logger.info(
-            f"marketfiyati API: '{keyword}' → {len(result)} chunk(s)"
-        )
-        return result
+
+        # API returns a list directly or wrapped in a key
+        items = data if isinstance(data, list) else data.get("productDepotInfoList", data.get("data", []))
+        if not isinstance(items, list):
+            items = []
+
+        products = []
+        for item in items:
+            try:
+                name = (item.get("title") or item.get("name") or "").strip()
+                price_val = item.get("price") or item.get("currentPrice") or 0
+                market_raw = item.get("marketAdi") or item.get("market") or item.get("depotName") or ""
+                product_url = item.get("url") or item.get("productUrl") or MARKETFIYATI_API_URL
+
+                price = float(str(price_val).replace(",", ".")) if price_val else 0.0
+
+                if not name or price <= 0:
+                    continue
+
+                products.append({
+                    "product_name": name,
+                    "current_price": price,
+                    "market_name": _normalize_market(market_raw),
+                    "product_url": product_url,
+                })
+            except Exception:
+                continue
+
+        logger.info(f"marketfiyati API: '{keyword}' → {len(products)} product(s)")
+        return products
 
     except requests.RequestException as exc:
         logger.error(f"marketfiyati API error for '{keyword}': {exc}")
         return []
 
 
-async def fetch_all_marketfiyati(config: dict) -> list[ProductRaw]:
+async def fetch_all_marketfiyati(config: dict) -> list[dict]:
     """
     Sequentially query marketfiyati API for all MARKETFIYATI_KEYWORDS.
-    With the expanded keyword list (60+ terms) we use a 1.5 s delay between
-    calls and log progress every 10 keywords so CI logs stay readable.
+    Returns structured dicts directly — no OpenAI parsing needed.
+    1.5 s delay between calls to respect the API rate limit.
     """
-    all_raw: list[ProductRaw] = []
+    all_products: list[dict] = []
     lat = config["SHOP_LAT"]
     lon = config["SHOP_LON"]
-    chunk_size = config["GEMINI_CHUNK_SIZE"]
     total = len(MARKETFIYATI_KEYWORDS)
 
     logger.info(
@@ -169,14 +204,14 @@ async def fetch_all_marketfiyati(config: dict) -> list[ProductRaw]:
     )
 
     for i, keyword in enumerate(MARKETFIYATI_KEYWORDS, start=1):
-        items = fetch_marketfiyati_keyword(keyword, lat, lon, chunk_size)
-        all_raw.extend(items)
+        items = fetch_marketfiyati_keyword(keyword, lat, lon)
+        all_products.extend(items)
         if i % 10 == 0 or i == total:
-            logger.info(f"  marketfiyati progress: {i}/{total} keywords done")
+            logger.info(f"  marketfiyati progress: {i}/{total} keywords done, {len(all_products)} products so far")
         await asyncio.sleep(1.5)
 
-    logger.info(f"marketfiyati API complete: {len(all_raw)} chunk(s) total")
-    return all_raw
+    logger.info(f"marketfiyati API complete: {len(all_products)} product(s) total")
+    return all_products
 
 
 # ─────────────────────────────────────────────────────────────────────────────

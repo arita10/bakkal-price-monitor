@@ -3,12 +3,13 @@ main.py — Bakkal Price Monitoring Orchestrator
 
 Daily workflow:
   1. Load config from environment variables
-  2. Fetch raw product data (marketfiyati API + cimri.com via Crawl4AI)
-  3. Parse chunks with OpenAI GPT-4o Mini → structured ProductData
-  4. For each product: compare with last Supabase price
+  2. Fetch marketfiyati API → structured ProductData directly (no AI)
+  3. Scrape cimri.com via Crawl4AI → parse with OpenAI GPT-4o Mini
+  4. Scrape essenjet.com + bizimtoptan.com.tr via Playwright (no AI)
+  5. For each product: compare with last Supabase price
        → Send Telegram BUY alert if price dropped >= threshold
        → Upsert current price into Supabase
-  5. Send daily summary to Telegram
+  6. Send daily summary to Telegram
 
 Run locally:   python main.py
 Run in CI:     triggered by .github/workflows/daily_price_check.yml
@@ -53,37 +54,43 @@ async def run() -> None:
 
     # ── 2. Initialise clients ────────────────────────────────────────────────
     supabase = create_client(config["SUPABASE_URL"], config["SUPABASE_KEY"])
-    gemini_model = build_gemini_client(config["OPENAI_API_KEY"])
+    openai_client = build_gemini_client(config["OPENAI_API_KEY"])
 
-    # ── 3. Scrape — marketfiyati API ─────────────────────────────────────────
-    raw_items = await fetch_all_marketfiyati(config)
-
-    # ── 4. Scrape — cimri.com via Crawl4AI ──────────────────────────────────
-    cimri_items = await scrape_cimri(config)
-    raw_items.extend(cimri_items)
-
-    logger.info(f"Total raw chunks to parse with OpenAI: {len(raw_items)}")
-
-    # ── 5. Parse chunks with Gemini ──────────────────────────────────────────
-    all_products: list[ProductData] = []
-    for i, raw in enumerate(raw_items, start=1):
-        logger.debug(f"Parsing chunk {i}/{len(raw_items)} [{raw.source}]")
-        products = parse_chunk(raw, gemini_model)
-        all_products.extend(products)
-        # OpenAI paid tier: ~500 RPM limit — 0.5 s gap is safe and fast
-        await asyncio.sleep(0.5)
-
-    logger.info(f"OpenAI extracted {len(all_products)} product(s) total")
-
-    # ── 6a. Deduplicate OpenAI-parsed products by product_url ────────────────
+    # ── 3. marketfiyati API → direct structured dicts (no OpenAI needed) ────
     seen_urls: set[str] = set()
     unique_products: list[ProductData] = []
-    for product in all_products:
-        if product.product_url not in seen_urls:
-            seen_urls.add(product.product_url)
-            unique_products.append(product)
 
-    # ── 6b. Scrape essenjet.com directly (no AI needed — structured data) ────
+    mf_dicts = await fetch_all_marketfiyati(config)
+    mf_added = 0
+    for d in mf_dicts:
+        if d["product_url"] not in seen_urls and d["current_price"] > 0:
+            seen_urls.add(d["product_url"])
+            unique_products.append(ProductData(
+                product_name=d["product_name"],
+                current_price=d["current_price"],
+                market_name=d["market_name"],
+                product_url=d["product_url"],
+            ))
+            mf_added += 1
+    logger.info(f"marketfiyati: {mf_added} unique product(s) added (no OpenAI)")
+
+    # ── 4. cimri.com via Crawl4AI → parse with OpenAI (HTML needs AI) ───────
+    cimri_items = await scrape_cimri(config)
+    logger.info(f"cimri: {len(cimri_items)} chunk(s) to parse with OpenAI")
+
+    cimri_added = 0
+    for i, raw in enumerate(cimri_items, start=1):
+        logger.debug(f"OpenAI parsing cimri chunk {i}/{len(cimri_items)}")
+        products = parse_chunk(raw, openai_client)
+        for p in products:
+            if p.product_url not in seen_urls and p.current_price > 0:
+                seen_urls.add(p.product_url)
+                unique_products.append(p)
+                cimri_added += 1
+        await asyncio.sleep(0.5)
+    logger.info(f"cimri: {cimri_added} unique product(s) added via OpenAI")
+
+    # ── 5. essenjet.com directly (Playwright, no AI) ─────────────────────────
     essen_dicts = await scrape_essen_direct()
     essen_added = 0
     for d in essen_dicts:
@@ -96,8 +103,9 @@ async def run() -> None:
                 product_url=d["product_url"],
             ))
             essen_added += 1
+    logger.info(f"Essen JET: {essen_added} unique product(s) added (no OpenAI)")
 
-    # ── 6c. Scrape bizimtoptan.com.tr directly (JS-rendered, no AI needed) ───
+    # ── 6. bizimtoptan.com.tr directly (Playwright, no AI) ───────────────────
     bizim_dicts = await scrape_bizimtoptan_direct()
     bizim_added = 0
     for d in bizim_dicts:
@@ -110,11 +118,9 @@ async def run() -> None:
                 product_url=d["product_url"],
             ))
             bizim_added += 1
+    logger.info(f"Bizim Toptan: {bizim_added} unique product(s) added (no OpenAI)")
 
-    logger.info(
-        f"After deduplication: {len(unique_products)} unique product(s) "
-        f"(incl. {essen_added} from Essen JET, {bizim_added} from Bizim Toptan)"
-    )
+    logger.info(f"Total unique products: {len(unique_products)}")
 
     # ── 7. Compare, alert, upsert ────────────────────────────────────────────
     total_scraped = 0
@@ -122,7 +128,6 @@ async def run() -> None:
     total_errors = 0
 
     for product in unique_products:
-        # Basic sanity check
         if not product.product_url or product.current_price <= 0:
             logger.debug(f"Skipping invalid product: {product.product_name!r}")
             total_errors += 1
@@ -130,10 +135,8 @@ async def run() -> None:
 
         total_scraped += 1
 
-        # Fetch last known price
         last_price = get_last_price(supabase, product.product_url)
 
-        # Check for a price drop that meets the threshold
         if last_price is not None and product.current_price < last_price:
             drop_pct = ((last_price - product.current_price) / last_price) * 100
             if drop_pct >= threshold:
@@ -151,10 +154,8 @@ async def run() -> None:
                 )
                 if sent:
                     total_alerts += 1
-                # Pause briefly to avoid Telegram 429 rate-limit
                 await asyncio.sleep(0.5)
 
-        # Always persist the current price
         success = upsert_price(supabase, product, last_price)
         if not success:
             total_errors += 1
