@@ -141,9 +141,11 @@ LIMIT 20;
 ALTER TABLE products      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "service_role_full_access" ON products;
 CREATE POLICY "service_role_full_access" ON products
     FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "service_role_full_access" ON price_history;
 CREATE POLICY "service_role_full_access" ON price_history
     FOR ALL TO service_role USING (true) WITH CHECK (true);
 
