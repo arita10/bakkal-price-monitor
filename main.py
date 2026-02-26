@@ -22,7 +22,7 @@ from supabase import create_client
 from alerts import send_daily_summary, send_price_drop_alert
 from config import load_config
 from parser import ProductData, build_gemini_client, parse_chunk
-from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen
+from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen_direct
 from storage import get_last_price, upsert_price
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,10 +62,6 @@ async def run() -> None:
     cimri_items = await scrape_cimri(config)
     raw_items.extend(cimri_items)
 
-    # ── 4b. Scrape — essenjet.com via Crawl4AI ───────────────────────────────
-    essen_items = await scrape_essen(config)
-    raw_items.extend(essen_items)
-
     logger.info(f"Total raw chunks to parse with OpenAI: {len(raw_items)}")
 
     # ── 5. Parse chunks with Gemini ──────────────────────────────────────────
@@ -79,7 +75,7 @@ async def run() -> None:
 
     logger.info(f"OpenAI extracted {len(all_products)} product(s) total")
 
-    # ── 6. Deduplicate by product_url ────────────────────────────────────────
+    # ── 6a. Deduplicate OpenAI-parsed products by product_url ────────────────
     seen_urls: set[str] = set()
     unique_products: list[ProductData] = []
     for product in all_products:
@@ -87,8 +83,23 @@ async def run() -> None:
             seen_urls.add(product.product_url)
             unique_products.append(product)
 
+    # ── 6b. Scrape essenjet.com directly (no AI needed — structured data) ────
+    essen_dicts = await scrape_essen_direct()
+    essen_added = 0
+    for d in essen_dicts:
+        if d["product_url"] not in seen_urls and d["current_price"] > 0:
+            seen_urls.add(d["product_url"])
+            unique_products.append(ProductData(
+                product_name=d["product_name"],
+                current_price=d["current_price"],
+                market_name=d["market_name"],
+                product_url=d["product_url"],
+            ))
+            essen_added += 1
+
     logger.info(
-        f"After deduplication: {len(unique_products)} unique product(s)"
+        f"After deduplication: {len(unique_products)} unique product(s) "
+        f"(incl. {essen_added} from Essen JET)"
     )
 
     # ── 7. Compare, alert, upsert ────────────────────────────────────────────
