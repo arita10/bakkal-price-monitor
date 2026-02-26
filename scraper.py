@@ -23,16 +23,32 @@ logger = logging.getLogger("bakkal_monitor.scraper")
 # ── Target keywords for marketfiyati API ─────────────────────────────────────
 # Staple groceries relevant to a Turkish Bakkal / small shop
 MARKETFIYATI_KEYWORDS = [
-    "süt",
-    "ekmek",
-    "ayçiçek yağı",
-    "un",
-    "şeker",
-    "çay",
-    "makarna",
-    "pirinç",
-    "peynir",
-    "yumurta",
+    # --- Staples & Grains ---
+    "süt", "ekmek", "ayçiçek yağı", "un", "şeker", "çay", "makarna", "pirinç",
+    "fasulye", "mercimek", "bulgur", "salça", "yufka", "arpa şehriye", 
+    "hazır çorba", "mısır yağı", "tuz", "irmik", "nişasta", "karabiber", "pul biber",
+
+    # --- Breakfast & Dairy ---
+    "peynir", "yumurta", "zeytin", "margarin", "bal", "reçel", "sucuk", "yoğurt", 
+    "ayran", "tereyağı", "tahin pekmez", "labne peyniri", "kaşar peyniri", 
+    "süzme peynir", "salam", "sosis", "zeytin ezmesi", "kaymak",
+
+    # --- Beverages ---
+    "su", "kola", "meyve suyu", "kahve", "maden suyu", "gazoz", "türk kahvesi", 
+    "limonata", "toz içecek", "meyveli soda", "şalgam suyu", "buzlu çay",
+
+    # --- Snacks & Sweets ---
+    "bisküvi", "gofret", "kek", "cips", "çikolata", "sakız", "lolipop şeker", 
+    "ayçekirdeği", "fıstık", "leblebi", "kraker", "helva", "pötibör bisküvi",
+
+    # --- Hygiene & Cleaning ---
+    "deterjan", "sabun", "tuvalet kağıdı", "çamaşır suyu", "bulaşık süngeri", 
+    "sıvı bulaşık deterjanı", "yüzey temizleyici", "ıslak mendil", "kağıt peçete", 
+    "şampuan", "diş macunu", "tıraş bıçağı", "yumuşatıcı", "sıvı sabun", "katı sabun",
+
+    # --- Household & Miscellaneous ---
+    "kalem pil", "ince pil", "mutfak çakmağı", "kibrit", "alüminyum folyo", 
+    "streç film", "çöp torbası", "ampul", "yara bandı", "traş köpüğü"
 ]
 
 MARKETFIYATI_API_URL = "https://api.marketfiyati.org.tr/api/v2/search"
@@ -130,23 +146,27 @@ def fetch_marketfiyati_keyword(
 async def fetch_all_marketfiyati(config: dict) -> list[ProductRaw]:
     """
     Sequentially query marketfiyati API for all MARKETFIYATI_KEYWORDS.
-    Uses a 1-second async sleep between calls to be courteous.
+    With the expanded keyword list (60+ terms) we use a 1.5 s delay between
+    calls and log progress every 10 keywords so CI logs stay readable.
     """
     all_raw: list[ProductRaw] = []
     lat = config["SHOP_LAT"]
     lon = config["SHOP_LON"]
     chunk_size = config["GEMINI_CHUNK_SIZE"]
+    total = len(MARKETFIYATI_KEYWORDS)
 
     logger.info(
-        f"Querying marketfiyati API for {len(MARKETFIYATI_KEYWORDS)} keywords "
-        f"near ({lat}, {lon})"
+        f"Querying marketfiyati API for {total} keywords near ({lat}, {lon})"
     )
 
-    for keyword in MARKETFIYATI_KEYWORDS:
+    for i, keyword in enumerate(MARKETFIYATI_KEYWORDS, start=1):
         items = fetch_marketfiyati_keyword(keyword, lat, lon, chunk_size)
         all_raw.extend(items)
-        await asyncio.sleep(1.0)
+        if i % 10 == 0 or i == total:
+            logger.info(f"  marketfiyati progress: {i}/{total} keywords done")
+        await asyncio.sleep(1.5)
 
+    logger.info(f"marketfiyati API complete: {len(all_raw)} chunk(s) total")
     return all_raw
 
 

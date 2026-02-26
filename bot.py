@@ -328,6 +328,53 @@ def get_recent_products(supabase, limit: int = 10) -> list[dict]:
         return []
 
 
+def get_best_deals(supabase, limit: int = 10) -> list[dict]:
+    """Return today's biggest price drops using v_best_deals view."""
+    try:
+        response = (
+            supabase.table("v_best_deals")
+            .select("product_name, market_name, current_price, previous_price, price_drop_pct")
+            .limit(limit)
+            .execute()
+        )
+        return response.data or []
+    except Exception:
+        # Fallback: query price_history directly
+        try:
+            from datetime import date
+            today = date.today().isoformat()
+            response = (
+                supabase.table("price_history")
+                .select("product_name, market_name, current_price, previous_price, price_drop_pct")
+                .eq("scraped_date", today)
+                .gte("price_drop_pct", 5)
+                .order("price_drop_pct", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception as exc2:
+            logger.error(f"get_best_deals error: {exc2}")
+            return []
+
+
+def get_price_history(supabase, product_url: str, days: int = 7) -> list[dict]:
+    """Return last N days of price records for a product URL."""
+    try:
+        response = (
+            supabase.table("price_history")
+            .select("current_price, previous_price, price_drop_pct, scraped_date")
+            .eq("product_url", product_url)
+            .order("scraped_date", desc=True)
+            .limit(days)
+            .execute()
+        )
+        return response.data or []
+    except Exception as exc:
+        logger.error(f"get_price_history error: {exc}")
+        return []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Response formatters
 # ─────────────────────────────────────────────────────────────────────────────
@@ -344,10 +391,16 @@ def fmt_price(price) -> str:
         return str(price)
 
 
-def build_price_reply(query: str, rows: list[dict], matched_term: str = "") -> str:
+def build_price_reply(
+    query: str,
+    rows: list[dict],
+    matched_term: str = "",
+    history: list[dict] | None = None,
+) -> str:
     """
-    Build a friendly Telegram HTML message showing prices grouped by market,
-    with contextual suggestions at the end.
+    Build a friendly Telegram HTML message showing prices grouped by market.
+    If `history` is provided (list of daily records), appends a mini trend
+    for the first product found.
     """
     if not rows:
         return (
@@ -390,6 +443,21 @@ def build_price_reply(query: str, rows: list[dict], matched_term: str = "") -> s
     date = rows[0].get("scraped_date", "")
     lines.append(f"<i>📅 Son güncelleme: {_esc(str(date))}</i>")
 
+    # Inline price trend (last 7 days) for the first result
+    if history and len(history) >= 2:
+        lines.append("\n📈 <b>Son 7 günlük fiyat geçmişi:</b>")
+        for h in history[:7]:
+            d = str(h["scraped_date"])
+            p = fmt_price(h["current_price"])
+            drop = h.get("price_drop_pct")
+            if drop is not None and float(drop) > 0:
+                arrow = " 📉"
+            elif drop is not None and float(drop) < 0:
+                arrow = " 📈"
+            else:
+                arrow = ""
+            lines.append(f"  <code>{d}</code>  {p} TL{arrow}")
+
     # Contextual suggestions
     lines.append(_suggestion_line(display))
 
@@ -428,6 +496,50 @@ def build_recent_reply(rows: list[dict]) -> str:
         "\n💡 <i>Bir ürünü daha detaylı görmek için adını yazmanız yeterli!</i>\n"
         "Örnek: <code>süt</code>, <code>ekmek</code>, <code>yağ</code>"
     )
+    return "\n".join(lines)
+
+
+def build_deals_reply(rows: list[dict]) -> str:
+    if not rows:
+        return (
+            "🤷 Bugün için kayıtlı fırsat bulunamadı.\n\n"
+            "<i>Fırsatlar her sabah 07:00'de güncellenir. "
+            "Veriler henüz yüklenmemiş olabilir.</i>"
+        )
+    lines = ["🔥 <b>Bugünün En İyi Fırsatları:</b>\n"]
+    for row in rows:
+        name = _esc(row["product_name"])
+        market = _esc(row["market_name"])
+        price = fmt_price(row["current_price"])
+        prev  = fmt_price(row["previous_price"]) if row.get("previous_price") else "?"
+        drop  = row.get("price_drop_pct", 0) or 0
+        lines.append(
+            f"📉 <b>{name}</b>\n"
+            f"   {market} — <b>{price} TL</b>  <i>(eskiden {prev} TL, -%{fmt_price(drop)})</i>"
+        )
+    lines.append("\n<i>💡 Bir ürün adı yazarak daha fazla detay görebilirsiniz.</i>")
+    return "\n".join(lines)
+
+
+def build_history_reply(product_name: str, rows: list[dict]) -> str:
+    """Show last N days of price for a product."""
+    if not rows:
+        return (
+            f"📊 <b>{_esc(product_name)}</b> için henüz yeterli geçmiş veri yok.\n\n"
+            "<i>Fiyat geçmişi her gün birikmektedir.</i>"
+        )
+    lines = [f"📊 <b>{_esc(product_name)}</b> — Son {len(rows)} günlük fiyat:\n"]
+    for row in rows:
+        date = str(row["scraped_date"])
+        price = fmt_price(row["current_price"])
+        drop = row.get("price_drop_pct")
+        if drop is not None and float(drop) > 0:
+            trend = f" 📉 -%{fmt_price(drop)}"
+        elif drop is not None and float(drop) < 0:
+            trend = f" 📈 +%{fmt_price(abs(float(drop)))}"
+        else:
+            trend = ""
+        lines.append(f"  <code>{date}</code>  <b>{price} TL</b>{trend}")
     return "\n".join(lines)
 
 
@@ -491,6 +603,7 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
              "<code>süt</code>  <code>ekmek</code>  <code>yağ</code>  <code>şeker</code>  <code>çay</code>\n"
              "<code>milk</code>  <code>bread</code>  <code>oil</code>  <code>cheese</code>  <code>eggs</code>\n\n"
              "📋 <b>Komutlar:</b>\n"
+             "/firsat — Bugünün en iyi fırsatları 🔥\n"
              "/markets — Takip ettiğim marketler\n"
              "/son — Son güncellenen ürünler\n"
              "/help — Yardım\n\n"
@@ -505,6 +618,7 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
              "<code>200ml süt</code> → daha spesifik arama\n\n"
              "📋 <b>Tüm komutlar:</b>\n"
              "/fiyat &lt;ürün&gt; — Fiyat sorgula\n"
+             "/firsat — Bugünün en iyi fırsatları\n"
              "/markets — Takip edilen marketler\n"
              "/son — Son güncellenen 10 ürün\n"
              "/help — Bu yardım mesajı\n\n"
@@ -518,6 +632,10 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
         rows = get_recent_products(supabase)
         send(token, chat_id, build_recent_reply(rows))
 
+    elif lower in ("/firsat", "/firsat@bakkalbot", "/fırsat", "/fırsat@bakkalbot"):
+        rows = get_best_deals(supabase)
+        send(token, chat_id, build_deals_reply(rows))
+
     elif lower.startswith("/fiyat "):
         query = text[7:].strip()
         if not query:
@@ -527,7 +645,8 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
                  "Örnekler: <code>süt</code>, <code>ekmek</code>, <code>yağ</code>, <code>şeker</code>")
             return
         rows, matched = search_prices(supabase, query)
-        send(token, chat_id, build_price_reply(query, rows, matched))
+        history = get_price_history(supabase, rows[0]["product_url"]) if rows else []
+        send(token, chat_id, build_price_reply(query, rows, matched, history))
 
     elif lower in ("merhaba", "selam", "hi", "hello", "hey", "sa", "slm"):
         send(token, chat_id,
@@ -554,9 +673,9 @@ def handle_message(token: str, supabase, chat_id: int, text: str) -> None:
     else:
         # Treat any plain text as a product query
         rows, matched = search_prices(supabase, text)
-        # Use the cleaned keyword as the display label, not the full sentence
         display_query = _clean_query(text)
-        send(token, chat_id, build_price_reply(display_query, rows, matched))
+        history = get_price_history(supabase, rows[0]["product_url"]) if rows else []
+        send(token, chat_id, build_price_reply(display_query, rows, matched, history))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
