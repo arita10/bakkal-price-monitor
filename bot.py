@@ -470,7 +470,7 @@ _DB_SCHEMA = """
 Table: price_history
 Columns:
   product_name  TEXT       — full product name in Turkish
-  market_name   TEXT       — retailer (BIM, A101, SOK, Migros, CarrefourSA, Hakmar, Tarim Kredi, Essen JET, Bizim Toptan)
+  market_name   TEXT       — retailer (BIM, A101, SOK, Migros, CarrefourSA, Hakmar, Tarim Kredi, Bizim Toptan)
   current_price NUMERIC    — price in Turkish Lira
   previous_price NUMERIC   — price on previous scrape (nullable)
   price_drop_pct NUMERIC   — % drop vs previous price (positive = cheaper, nullable)

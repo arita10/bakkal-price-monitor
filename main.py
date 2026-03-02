@@ -5,7 +5,7 @@ Daily workflow:
   1. Load config from environment variables
   2. Fetch marketfiyati API → structured ProductData directly (no AI)
   3. Scrape cimri.com via Crawl4AI → parse with OpenAI GPT-4o Mini
-  4. Scrape essenjet.com + bizimtoptan.com.tr via Playwright (no AI)
+  4. Scrape bizimtoptan.com.tr via Playwright (no AI)
   5. For each product: compare with last Supabase price
        → Send Telegram BUY alert if price dropped >= threshold
        → Upsert current price into Supabase
@@ -23,7 +23,7 @@ from supabase import create_client
 from alerts import send_daily_summary, send_price_drop_alert
 from config import load_config
 from parser import ProductData, build_gemini_client, parse_chunk
-from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_essen_direct, scrape_bizimtoptan_direct
+from scraper import fetch_all_marketfiyati, scrape_cimri, scrape_bizimtoptan_direct
 from storage import get_last_price, upsert_price
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,22 +90,7 @@ async def run() -> None:
         await asyncio.sleep(0.5)
     logger.info(f"cimri: {cimri_added} unique product(s) added via OpenAI")
 
-    # ── 5. essenjet.com directly (Playwright, no AI) ─────────────────────────
-    essen_dicts = await scrape_essen_direct()
-    essen_added = 0
-    for d in essen_dicts:
-        if d["product_url"] not in seen_urls and d["current_price"] > 0:
-            seen_urls.add(d["product_url"])
-            unique_products.append(ProductData(
-                product_name=d["product_name"],
-                current_price=d["current_price"],
-                market_name=d["market_name"],
-                product_url=d["product_url"],
-            ))
-            essen_added += 1
-    logger.info(f"Essen JET: {essen_added} unique product(s) added (no OpenAI)")
-
-    # ── 6. bizimtoptan.com.tr directly (Playwright, no AI) ───────────────────
+    # ── 5. bizimtoptan.com.tr directly (Playwright, no AI) ───────────────────
     bizim_dicts = await scrape_bizimtoptan_direct()
     bizim_added = 0
     for d in bizim_dicts:
