@@ -1,8 +1,8 @@
 """
 api.py — FastAPI REST interface for the Bakkal Price Monitor.
 
-Exposes the same core logic (scraper, parser, storage) as HTTP endpoints
-so your own application can integrate with the system.
+Exposes the same core logic as HTTP endpoints so your own application
+can integrate with the system.
 
 Run locally:
     uvicorn api:app --reload --port 8000
@@ -17,7 +17,6 @@ Endpoints:
     GET  /markets                   List of distinct market names in DB
 """
 
-import asyncio
 import logging
 from typing import Optional
 
@@ -26,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 
-from config import load_config
+from src.config import load_config
 from main import run as run_monitor
 
 logger = logging.getLogger("bakkal_monitor.api")
@@ -39,13 +38,11 @@ app = FastAPI(
     title="Bakkal Price Monitor API",
     description=(
         "Track daily grocery prices from Turkish discount markets "
-        "(BİM, A101, Şok, Migros, CarrefourSA) and receive BUY alerts."
+        "(BIM, A101, SOK, Migros, CarrefourSA) and receive BUY alerts."
     ),
     version="1.0.0",
 )
 
-# Allow all origins so any frontend / mobile app can connect.
-# Restrict origins in production by replacing ["*"] with your domain list.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,11 +106,7 @@ def health():
 def get_markets():
     """Return all distinct market names currently in the database."""
     try:
-        resp = (
-            _supabase.table("price_history")
-            .select("market_name")
-            .execute()
-        )
+        resp = _supabase.table("price_history").select("market_name").execute()
         names = sorted({row["market_name"] for row in resp.data})
         return names
     except Exception as exc:
@@ -124,10 +117,7 @@ def get_markets():
 def get_latest_prices(
     limit: int = Query(100, ge=1, le=500, description="Max records to return"),
 ):
-    """
-    Return the most recent price record for every tracked product,
-    ordered by scraped_at descending.
-    """
+    """Return the most recent price record for every tracked product."""
     try:
         resp = (
             _supabase.table("price_history")
@@ -146,10 +136,7 @@ def get_prices_by_market(
     market: str,
     limit: int = Query(100, ge=1, le=500),
 ):
-    """
-    Return latest prices filtered by market name (case-insensitive).
-    Example: /prices/Migros  or  /prices/BIM
-    """
+    """Return latest prices filtered by market name (case-insensitive)."""
     try:
         resp = (
             _supabase.table("price_history")
@@ -176,10 +163,7 @@ def get_product_history(
     url: str = Query(..., description="Full product URL to look up"),
     limit: int = Query(30, ge=1, le=365),
 ):
-    """
-    Return full price history for a single product URL,
-    oldest-to-newest (useful for charting price trends).
-    """
+    """Return full price history for a single product URL."""
     try:
         resp = (
             _supabase.table("price_history")
@@ -203,15 +187,10 @@ def get_product_history(
 
 @app.get("/alerts", tags=["Alerts"], response_model=list[PriceRecord])
 def get_price_drops(
-    min_drop_pct: float = Query(
-        5.0, ge=0.1, description="Minimum drop % to include"
-    ),
+    min_drop_pct: float = Query(5.0, ge=0.1, description="Minimum drop % to include"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """
-    Return all recorded price drops where price_drop_pct >= min_drop_pct,
-    newest first. Use this to review historical BUY alerts.
-    """
+    """Return all recorded price drops where price_drop_pct >= min_drop_pct."""
     try:
         resp = (
             _supabase.table("price_history")
@@ -228,11 +207,7 @@ def get_price_drops(
 
 @app.post("/run", tags=["Control"], response_model=RunResponse)
 async def trigger_run(background_tasks: BackgroundTasks):
-    """
-    Manually trigger a full scrape → parse → store → alert cycle.
-    Runs in the background so the HTTP response returns immediately.
-    Check your Telegram for the daily summary when it finishes.
-    """
+    """Trigger a full scrape → parse → store → alert cycle in the background."""
     background_tasks.add_task(_run_in_background)
     return RunResponse(
         status="accepted",
