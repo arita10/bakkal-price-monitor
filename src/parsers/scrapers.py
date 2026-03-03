@@ -56,6 +56,22 @@ BIZIMTOPTAN = ShopConfig(
 
 # ── CarrefourSA ───────────────────────────────────────────────────────────────
 
+async def _carrefoursa_wait(page) -> None:
+    """Wait for jQuery product cards to fully render (lazy-loaded)."""
+    try:
+        await page.wait_for_function(
+            """() => {
+                const cards = document.querySelectorAll('.product-card');
+                return cards.length > 0 &&
+                       !!cards[0].querySelector('h3.item-name');
+            }""",
+            timeout=15_000,
+        )
+    except Exception:
+        logger.warning("CarrefourSA: render timeout, trying anyway")
+    await asyncio.sleep(1)
+
+
 CARREFOURSA = ShopConfig(
     market_name  = "CarrefourSA",
     base_url     = "https://www.carrefoursa.com",
@@ -143,15 +159,16 @@ CARREFOURSA = ShopConfig(
         "https://www.carrefoursa.com/kolonyalar/c/1820",
         "https://www.carrefoursa.com/agda-ve-epilasyon/c/1700",
     ],
-    card_sel        = "[class*='product-card']",
-    name_sel        = "h3",
-    price_sel       = "[class*='discounted']",
-    link_sel        = "a[class*='product']",
+    card_sel        = ".product-card",
+    name_sel        = "h3.item-name",
+    price_sel       = "span.item-price",
+    fallback_price_sel = "[class*='discounted']",
+    link_sel        = "a.product-return",
     pagination      = NEXT_BUTTON,
-    next_btn_sel    = "[class*='pager'] a.next, [class*='pager'] a[class*='next'], "
-                      "[class*='pager'] li.next > a, [class*='next-page'] a",
+    next_btn_sel    = "[class*='pager'] a.next",
     max_pages       = 20,
-    url_concurrency = 5,   # 5 category URLs in parallel (each paginates sequentially)
+    url_concurrency = 5,
+    pre_scrape_hook = _carrefoursa_wait,
 )
 
 

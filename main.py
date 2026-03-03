@@ -11,10 +11,11 @@ Daily workflow:
   7. Scrape migros.com.tr via Playwright (no AI)
   8. Scrape sokmarket.com.tr via Playwright (no AI)
   9. Scrape a101.com.tr/kapida via Playwright (no AI)
- 10. For each product: compare with last Supabase price
+ 10. Scrape BIM weekly flyers via Playwright + GPT-4o Vision (image OCR)
+ 11. For each product: compare with last Supabase price
       → Send Telegram BUY alert if price dropped >= threshold
       → Upsert current price into Supabase
- 11. Send daily summary to Telegram
+ 12. Send daily summary to Telegram
 
 Run locally:   python main.py
 Run in CI:     triggered by .github/workflows/daily_price_check.yml
@@ -27,6 +28,7 @@ import os
 from supabase import create_client
 
 from src.alerts import send_daily_summary, send_price_drop_alert
+from src.agents.bim_flyer_scraper import scrape_bim_flyers
 from src.agents.crawl4ai_scraper import scrape_cimri, scrape_a101
 from src.agents.marketfiyati_api import fetch_all as fetch_all_marketfiyati
 from src.agents.parser import ProductData, build_client, parse_chunk
@@ -106,6 +108,7 @@ async def run() -> None:
         migros_raw,
         sok_raw,
         a101kapida_raw,
+        bim_raw,
     ) = await asyncio.gather(
         fetch_all_marketfiyati(config),
         scrape_cimri(config),
@@ -115,6 +118,7 @@ async def run() -> None:
         scrape_migros(),
         scrape_sok(),
         scrape_a101kapida(),
+        scrape_bim_flyers(config),
     )
 
     # marketfiyati
@@ -154,6 +158,10 @@ async def run() -> None:
         f"BizimToptan:{bizim_added} CarrefourSA:{carrefour_added} "
         f"Migros:{migros_added} SOK:{sok_added} A101Kapida:{a101kapida_added}"
     )
+
+    # BIM flyers (Playwright + GPT-4o Vision)
+    bim_added = _add_direct(bim_raw)
+    logger.info(f"BIM flyers: {bim_added} unique product(s) added via Vision")
 
     logger.info(f"Total unique products: {len(unique_products)}")
 
