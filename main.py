@@ -31,11 +31,13 @@ from src.agents.crawl4ai_scraper import scrape_cimri, scrape_a101
 from src.agents.marketfiyati_api import fetch_all as fetch_all_marketfiyati
 from src.agents.parser import ProductData, build_client, parse_chunk
 from src.config import load_config
-from src.parsers.bizimtoptan import scrape as scrape_bizimtoptan
-from src.parsers.carrefoursa import scrape as scrape_carrefoursa
-from src.parsers.migros import scrape as scrape_migros
-from src.parsers.sok import scrape as scrape_sok
-from src.parsers.a101kapida import scrape as scrape_a101kapida
+from src.parsers.scrapers import (
+    scrape_bizimtoptan,
+    scrape_carrefoursa,
+    scrape_migros,
+    scrape_sok,
+    scrape_a101kapida,
+)
 from src.pipeline import get_last_price, upsert_price
 
 # ─────────────────────────────────────────────────────────────────────────────
