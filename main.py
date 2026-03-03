@@ -38,7 +38,7 @@ from src.parsers.scrapers import (
     scrape_sok,
     scrape_a101kapida,
 )
-from src.pipeline import get_last_price, upsert_price
+from src.pipeline import get_last_prices, upsert_prices  # bulk ops
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -93,77 +93,90 @@ async def run() -> None:
                 count += 1
         return count
 
-    # ── 3. marketfiyati API (no AI) ──────────────────────────────────────────
-    mf_dicts = await fetch_all_marketfiyati(config)
-    mf_added = _add_direct(mf_dicts)
-    logger.info(f"marketfiyati: {mf_added} unique product(s) added (no OpenAI)")
+    # ── 3-10. All scrapers in parallel ───────────────────────────────────────
+    # marketfiyati (API), cimri (Crawl4AI), a101 (Crawl4AI), and all 5
+    # Playwright shops run at the same time.
+    logger.info("Starting all scrapers in parallel...")
+    (
+        mf_dicts,
+        cimri_items,
+        a101_items,
+        bizim_raw,
+        carrefour_raw,
+        migros_raw,
+        sok_raw,
+        a101kapida_raw,
+    ) = await asyncio.gather(
+        fetch_all_marketfiyati(config),
+        scrape_cimri(config),
+        scrape_a101(config),
+        scrape_bizimtoptan(),
+        scrape_carrefoursa(),
+        scrape_migros(),
+        scrape_sok(),
+        scrape_a101kapida(),
+    )
 
-    # ── 4. cimri.com via Crawl4AI + OpenAI ───────────────────────────────────
-    cimri_items = await scrape_cimri(config)
-    logger.info(f"cimri: {len(cimri_items)} chunk(s) to parse with OpenAI")
+    # marketfiyati
+    mf_added = _add_direct(mf_dicts)
+    logger.info(f"marketfiyati: {mf_added} unique product(s) added")
+
+    # cimri → OpenAI parse
     cimri_added = 0
     for i, raw in enumerate(cimri_items, start=1):
         logger.debug(f"OpenAI parsing cimri chunk {i}/{len(cimri_items)}")
-        products = parse_chunk(raw, openai_client)
-        for p in products:
+        for p in parse_chunk(raw, openai_client):
             if p.product_url not in seen_urls and p.current_price > 0:
                 seen_urls.add(p.product_url)
                 unique_products.append(p)
                 cimri_added += 1
-        await asyncio.sleep(0.5)
     logger.info(f"cimri: {cimri_added} unique product(s) added via OpenAI")
 
-    # ── 5. a101.com.tr via Crawl4AI + OpenAI ────────────────────────────────
-    a101_items = await scrape_a101(config)
-    logger.info(f"a101: {len(a101_items)} chunk(s) to parse with OpenAI")
+    # a101 → OpenAI parse
     a101_added = 0
     for i, raw in enumerate(a101_items, start=1):
         logger.debug(f"OpenAI parsing a101 chunk {i}/{len(a101_items)}")
-        products = parse_chunk(raw, openai_client)
-        for p in products:
+        for p in parse_chunk(raw, openai_client):
             if p.product_url not in seen_urls and p.current_price > 0:
                 seen_urls.add(p.product_url)
                 unique_products.append(p)
                 a101_added += 1
-        await asyncio.sleep(0.5)
     logger.info(f"a101: {a101_added} unique product(s) added via OpenAI")
 
-    # ── 6. BizimToptan (Playwright, no AI) ───────────────────────────────────
-    bizim_added = _add_direct(await scrape_bizimtoptan())
-    logger.info(f"Bizim Toptan: {bizim_added} unique product(s) added (no OpenAI)")
-
-    # ── 7. CarrefourSA (Playwright, no AI) ───────────────────────────────────
-    carrefour_added = _add_direct(await scrape_carrefoursa())
-    logger.info(f"CarrefourSA: {carrefour_added} unique product(s) added (no OpenAI)")
-
-    # ── 8. Migros (Playwright, no AI) ────────────────────────────────────────
-    migros_added = _add_direct(await scrape_migros())
-    logger.info(f"Migros: {migros_added} unique product(s) added (no OpenAI)")
-
-    # ── 9. SOK Market (Playwright, no AI) ────────────────────────────────────
-    sok_added = _add_direct(await scrape_sok())
-    logger.info(f"SOK Market: {sok_added} unique product(s) added (no OpenAI)")
-
-    # ── 10. A101 Kapida (Playwright, no AI) ──────────────────────────────────
-    a101kapida_added = _add_direct(await scrape_a101kapida())
-    logger.info(f"A101 Kapida: {a101kapida_added} unique product(s) added (no OpenAI)")
+    # Playwright shops
+    bizim_added      = _add_direct(bizim_raw)
+    carrefour_added  = _add_direct(carrefour_raw)
+    migros_added     = _add_direct(migros_raw)
+    sok_added        = _add_direct(sok_raw)
+    a101kapida_added = _add_direct(a101kapida_raw)
+    logger.info(
+        f"Playwright done — "
+        f"BizimToptan:{bizim_added} CarrefourSA:{carrefour_added} "
+        f"Migros:{migros_added} SOK:{sok_added} A101Kapida:{a101kapida_added}"
+    )
 
     logger.info(f"Total unique products: {len(unique_products)}")
 
     # ── 11. Compare, alert, upsert ───────────────────────────────────────────
-    total_scraped = 0
     total_alerts = 0
-    total_errors = 0
 
-    for product in unique_products:
-        if not product.product_url or product.current_price <= 0:
-            logger.debug(f"Skipping invalid product: {product.product_name!r}")
-            total_errors += 1
-            continue
+    # Filter out invalid products once
+    valid_products = [
+        p for p in unique_products
+        if p.product_url and p.current_price > 0
+    ]
+    invalid_count = len(unique_products) - len(valid_products)
+    if invalid_count:
+        logger.debug(f"Skipping {invalid_count} invalid product(s)")
 
-        total_scraped += 1
-        last_price = get_last_price(supabase, product.product_url)
+    # Bulk-fetch all previous prices in one query instead of N queries
+    all_urls = [p.product_url for p in valid_products]
+    last_prices = get_last_prices(supabase, all_urls)
+    logger.info(f"Fetched last prices for {len(last_prices)} known product(s)")
 
+    # Send price-drop alerts (still per-product — Telegram rate limit)
+    for product in valid_products:
+        last_price = last_prices.get(product.product_url)
         if last_price is not None and product.current_price < last_price:
             drop_pct = ((last_price - product.current_price) / last_price) * 100
             if drop_pct >= threshold:
@@ -183,9 +196,9 @@ async def run() -> None:
                     total_alerts += 1
                 await asyncio.sleep(0.5)
 
-        success = upsert_price(supabase, product, last_price)
-        if not success:
-            total_errors += 1
+    # Bulk-upsert all products in one batched call
+    total_scraped, total_errors = upsert_prices(supabase, valid_products, last_prices)
+    total_errors += invalid_count
 
     # ── 12. Daily summary ────────────────────────────────────────────────────
     send_daily_summary(

@@ -49,6 +49,7 @@ BIZIMTOPTAN = ShopConfig(
     fallback_price_sel  = ".product-price",
     link_sel            = "a.product-item",
     pagination          = NONE,
+    url_concurrency     = 2,   # only 2 URLs total anyway
     pre_scrape_hook     = _bizimtoptan_wait,
 )
 
@@ -142,14 +143,15 @@ CARREFOURSA = ShopConfig(
         "https://www.carrefoursa.com/kolonyalar/c/1820",
         "https://www.carrefoursa.com/agda-ve-epilasyon/c/1700",
     ],
-    card_sel     = "[class*='product-card']",
-    name_sel     = "h3",
-    price_sel    = "[class*='discounted']",
-    link_sel     = "a[class*='product']",
-    pagination   = NEXT_BUTTON,
-    next_btn_sel = "[class*='pager'] a.next, [class*='pager'] a[class*='next'], "
-                   "[class*='pager'] li.next > a, [class*='next-page'] a",
-    max_pages    = 20,
+    card_sel        = "[class*='product-card']",
+    name_sel        = "h3",
+    price_sel       = "[class*='discounted']",
+    link_sel        = "a[class*='product']",
+    pagination      = NEXT_BUTTON,
+    next_btn_sel    = "[class*='pager'] a.next, [class*='pager'] a[class*='next'], "
+                      "[class*='pager'] li.next > a, [class*='next-page'] a",
+    max_pages       = 20,
+    url_concurrency = 5,   # 5 category URLs in parallel (each paginates sequentially)
 )
 
 
@@ -204,6 +206,7 @@ MIGROS = ShopConfig(
     pagination          = URL_PARAM,
     page_param          = "sayfa",
     max_pages           = 20,
+    url_concurrency     = 4,   # 4 category URLs in parallel
     pre_scrape_hook     = _migros_wait,
 )
 
@@ -241,6 +244,7 @@ SOK = ShopConfig(
     pagination      = URL_PARAM,
     page_param      = "page",
     max_pages       = 10,
+    url_concurrency = 4,   # 4 category URLs in parallel
 )
 
 
@@ -312,6 +316,7 @@ A101KAPIDA = ShopConfig(
     price_sel       = "",           # overridden by extract_price
     link_sel        = "a[href*='kapida']",
     pagination      = NONE,
+    url_concurrency = 3,   # 3 category URLs in parallel
     cookie_sel      = "button:has-text('Kabul Et')",
     pre_scrape_hook = _a101_wait,
     extract_name    = _a101_extract_name,

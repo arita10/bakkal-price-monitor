@@ -68,32 +68,45 @@ def _build_run_cfg() -> CrawlerRunConfig:
     )
 
 
+def _markdown_from_result(result) -> str:
+    """Extract the best markdown text from a crawl result."""
+    if result.markdown and result.markdown.fit_markdown:
+        return result.markdown.fit_markdown
+    if result.markdown and result.markdown.raw_markdown:
+        return result.markdown.raw_markdown
+    return ""
+
+
 async def _crawl_urls(
     urls: list[str],
     source_tag: str,
     chunk_size: int,
 ) -> list[ProductRaw]:
-    """Generic helper: crawl a list of URLs and return ProductRaw chunks."""
+    """
+    Crawl all URLs in parallel using arun_many(), return ProductRaw chunks.
+    Falls back to sequential arun() if arun_many is unavailable.
+    """
     results: list[ProductRaw] = []
     browser_cfg = BrowserConfig(headless=True, verbose=False)
     run_cfg = _build_run_cfg()
 
     async with AsyncWebCrawler(config=browser_cfg) as crawler:
-        for url in urls:
-            try:
-                logger.info(f"{source_tag}: crawling {url}")
-                result = await crawler.arun(url=url, config=run_cfg)
+        try:
+            # arun_many() crawls all URLs concurrently inside one browser session
+            crawl_results = await crawler.arun_many(urls=urls, config=run_cfg)
+        except AttributeError:
+            # Older crawl4ai versions — fall back to sequential
+            crawl_results = []
+            for url in urls:
+                crawl_results.append(await crawler.arun(url=url, config=run_cfg))
 
+        for url, result in zip(urls, crawl_results):
+            try:
                 if not result.success:
                     logger.warning(f"{source_tag}: crawl failed for {url}: {result.error_message}")
                     continue
 
-                markdown_text = (
-                    result.markdown.fit_markdown
-                    if result.markdown and result.markdown.fit_markdown
-                    else (result.markdown.raw_markdown if result.markdown else "")
-                )
-
+                markdown_text = _markdown_from_result(result)
                 if not markdown_text:
                     logger.warning(f"{source_tag}: no markdown extracted from {url}")
                     continue
@@ -106,11 +119,7 @@ async def _crawl_urls(
             except UnicodeEncodeError:
                 logger.error(f"{source_tag}: encoding error for {url} (Windows charmap)")
                 try:
-                    markdown_text = (
-                        result.markdown.fit_markdown
-                        if result.markdown and result.markdown.fit_markdown
-                        else (result.markdown.raw_markdown if result.markdown else "")
-                    )
+                    markdown_text = _markdown_from_result(result)
                     if markdown_text:
                         chunks = chunk_text(markdown_text, chunk_size)
                         for chunk in chunks:
@@ -119,7 +128,7 @@ async def _crawl_urls(
                 except Exception:
                     pass
             except Exception as exc:
-                logger.error(f"{source_tag}: unexpected error crawling {url}: {repr(exc)}")
+                logger.error(f"{source_tag}: unexpected error for {url}: {repr(exc)}")
 
     return results
 
