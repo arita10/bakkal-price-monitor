@@ -20,6 +20,7 @@ def load_config() -> dict:
         "OPENAI_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHAT_ID",
+        "AIVEN_DB_URL",
     ]
 
     config: dict = {}

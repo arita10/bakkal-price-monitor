@@ -12,9 +12,9 @@ Daily workflow:
   8. Scrape sokmarket.com.tr via Playwright (no AI)
   9. Scrape a101.com.tr/kapida via Playwright (no AI)
  10. Scrape BIM weekly flyers via Playwright + GPT-4o Vision (image OCR)
- 11. For each product: compare with last Supabase price
+ 11. For each product: compare with last Aiven price
       → Send Telegram BUY alert if price dropped >= threshold
-      → Upsert current price into Supabase
+      → Upsert current price into Aiven PostgreSQL
  12. Send daily summary to Telegram
 
 Run locally:   python main.py
@@ -24,8 +24,6 @@ Run in CI:     triggered by .github/workflows/daily_price_check.yml
 import asyncio
 import logging
 import os
-
-from supabase import create_client
 
 from src.alerts import send_daily_summary, send_price_drop_alert
 from src.agents.bim_flyer_scraper import scrape_bim_flyers
@@ -73,7 +71,7 @@ async def run() -> None:
     threshold = config["PRICE_DROP_THRESHOLD"]
 
     # ── 2. Initialise clients ────────────────────────────────────────────────
-    supabase = create_client(config["SUPABASE_URL"], config["SUPABASE_KEY"])
+    db_url = config["AIVEN_DB_URL"]
     openai_client = build_client(config["OPENAI_API_KEY"])
 
     # ── Deduplication set ────────────────────────────────────────────────────
@@ -179,7 +177,7 @@ async def run() -> None:
 
     # Bulk-fetch all previous prices in one query instead of N queries
     all_urls = [p.product_url for p in valid_products]
-    last_prices = get_last_prices(supabase, all_urls)
+    last_prices = get_last_prices(db_url, all_urls)
     logger.info(f"Fetched last prices for {len(last_prices)} known product(s)")
 
     # Send price-drop alerts (still per-product — Telegram rate limit)
@@ -205,7 +203,7 @@ async def run() -> None:
                 await asyncio.sleep(0.5)
 
     # Bulk-upsert all products in one batched call
-    total_scraped, total_errors = upsert_prices(supabase, valid_products, last_prices)
+    total_scraped, total_errors = upsert_prices(db_url, valid_products, last_prices)
     total_errors += invalid_count
 
     # ── 12. Daily summary ────────────────────────────────────────────────────
