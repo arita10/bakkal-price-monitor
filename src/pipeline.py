@@ -49,7 +49,7 @@ def get_last_prices(db_url: str, product_urls: list[str]) -> dict[str, float]:
         cur.execute(
             """
             SELECT DISTINCT ON (product_url) product_url, current_price
-            FROM price_history
+            FROM sp_price_history
             WHERE product_url = ANY(%s)
             ORDER BY product_url, scraped_at DESC
             """,
@@ -84,7 +84,7 @@ def get_price_history(
         cur.execute(
             """
             SELECT current_price, previous_price, price_drop_pct, scraped_date
-            FROM price_history
+            FROM sp_price_history
             WHERE product_url = %s
             ORDER BY scraped_date DESC
             LIMIT %s
@@ -109,7 +109,7 @@ def get_best_deals(db_url: str, limit: int = 10) -> list[dict]:
             """
             SELECT product_name, market_name, current_price,
                    previous_price, price_drop_pct, product_url
-            FROM v_best_deals
+            FROM sp_v_best_deals
             LIMIT %s
             """,
             (limit,),
@@ -184,7 +184,7 @@ def upsert_prices(
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO products (product_url, product_name, market_name, latest_price, last_seen_at)
+                    INSERT INTO sp_products (product_url, product_name, market_name, latest_price, last_seen_at)
                     VALUES %s
                     ON CONFLICT (product_url) DO UPDATE SET
                         product_name  = EXCLUDED.product_name,
@@ -208,7 +208,7 @@ def upsert_prices(
                 psycopg2.extras.execute_values(
                     cur,
                     """
-                    INSERT INTO price_history
+                    INSERT INTO sp_price_history
                         (product_url, product_name, market_name, current_price,
                          previous_price, price_drop_pct, scraped_date, scraped_at)
                     VALUES %s
