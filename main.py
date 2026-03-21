@@ -38,7 +38,7 @@ from src.parsers.scrapers import (
     scrape_sok,
     scrape_a101kapida,
 )
-from src.pipeline import get_last_prices, upsert_prices  # bulk ops
+from src.pipeline import get_last_prices, upsert_prices, init_pool  # bulk ops
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -71,7 +71,8 @@ async def run() -> None:
     threshold = config["PRICE_DROP_THRESHOLD"]
 
     # ── 2. Initialise clients ────────────────────────────────────────────────
-    db_url = config["AIVEN_DB_URL"]
+    db_url = config["SUPABASE_DB_URL"]
+    init_pool(db_url)   # shared pool of max 3 connections
     openai_client = build_client(config["OPENAI_API_KEY"])
 
     # ── Deduplication set ────────────────────────────────────────────────────

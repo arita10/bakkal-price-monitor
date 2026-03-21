@@ -15,17 +15,35 @@ from typing import Optional
 
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool
 
 from src.agents.parser import ProductData
 
 logger = logging.getLogger("bakkal_monitor.pipeline")
 
 _BATCH_SIZE = 500   # max rows per upsert call
+_pool: pool.SimpleConnectionPool | None = None
+
+
+def init_pool(db_url: str) -> None:
+    """Initialise a small connection pool (call once at startup)."""
+    global _pool
+    _pool = pool.SimpleConnectionPool(1, 3, db_url)
 
 
 def _connect(db_url: str) -> psycopg2.extensions.connection:
-    """Return a psycopg2 connection to Aiven PostgreSQL."""
+    """Return a connection — from pool if available, else direct."""
+    if _pool:
+        return _pool.getconn()
     return psycopg2.connect(db_url)
+
+
+def _release(conn: psycopg2.extensions.connection) -> None:
+    """Return connection to pool or close it."""
+    if _pool:
+        _pool.putconn(conn)
+    else:
+        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +77,7 @@ def get_last_prices(db_url: str, product_urls: list[str]) -> dict[str, float]:
             result[row["product_url"]] = float(row["current_price"])
 
         cur.close()
-        conn.close()
+        _release(conn)
     except Exception as exc:
         logger.error(f"get_last_prices error: {exc}")
 
@@ -93,7 +111,7 @@ def get_price_history(
         )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
-        conn.close()
+        _release(conn)
         return rows
     except Exception as exc:
         logger.error(f"get_price_history error for {product_url}: {exc}")
@@ -116,7 +134,7 @@ def get_best_deals(db_url: str, limit: int = 10) -> list[dict]:
         )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
-        conn.close()
+        _release(conn)
         return rows
     except Exception as exc:
         logger.error(f"get_best_deals error: {exc}")
@@ -229,7 +247,7 @@ def upsert_prices(
                 errors += len(chunk)
 
         cur.close()
-        conn.close()
+        _release(conn)
     except Exception as exc:
         logger.error(f"DB connection error in upsert_prices: {exc}")
         errors += len(product_rows)

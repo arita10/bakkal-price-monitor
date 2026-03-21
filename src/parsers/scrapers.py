@@ -12,7 +12,6 @@ import logging
 import re
 
 from src.parsers.base import ShopConfig, scrape_shop, URL_PARAM, NEXT_BUTTON, NONE
-from src.utils import parse_tr_price
 
 logger = logging.getLogger("bakkal_monitor.parsers")
 
@@ -57,7 +56,7 @@ BIZIMTOPTAN = ShopConfig(
 # ── CarrefourSA ───────────────────────────────────────────────────────────────
 
 async def _carrefoursa_wait(page) -> None:
-    """Wait for jQuery product cards to fully render (lazy-loaded)."""
+    """Wait for product cards to fully render."""
     try:
         await page.wait_for_function(
             """() => {
@@ -65,11 +64,11 @@ async def _carrefoursa_wait(page) -> None:
                 return cards.length > 0 &&
                        !!cards[0].querySelector('h3.item-name');
             }""",
-            timeout=15_000,
+            timeout=30_000,
         )
     except Exception:
         logger.warning("CarrefourSA: render timeout, trying anyway")
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
 
 
 CARREFOURSA = ShopConfig(
@@ -167,7 +166,7 @@ CARREFOURSA = ShopConfig(
     pagination      = NEXT_BUTTON,
     next_btn_sel    = "[class*='pager'] a.next",
     max_pages       = 20,
-    url_concurrency = 5,
+    url_concurrency = 2,
     pre_scrape_hook = _carrefoursa_wait,
 )
 
