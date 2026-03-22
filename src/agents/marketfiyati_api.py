@@ -34,6 +34,13 @@ MARKETFIYATI_KEYWORDS = [
     "bisküvi", "gofret", "kek", "cips", "çikolata", "sakız", "lolipop şeker",
     "ayçekirdeği", "fıstık", "leblebi", "kraker", "helva", "pötibör bisküvi",
 
+    # --- Branded Snacks (matches Balci Market products) ---
+    "Doritos", "Ruffles", "Lays", "Patos", "Cheetos", "Çerezza",
+    "Ülker", "Eti", "Eti Browni", "Eti Burçak", "Ülker Halley",
+    "Ülker Albeni", "Ülker İkram", "Ülker Çizi", "Dankek",
+    "Nescafe", "Knorr", "Tukas", "Pakmaya", "Alpella",
+    "Namet", "Torku", "Dost yoğurt", "Pınar süt",
+
     # --- Hygiene & Cleaning ---
     "deterjan", "sabun", "tuvalet kağıdı", "çamaşır suyu", "bulaşık süngeri",
     "sıvı bulaşık deterjanı", "yüzey temizleyici", "ıslak mendil", "kağıt peçete",
