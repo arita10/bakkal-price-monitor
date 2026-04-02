@@ -340,6 +340,135 @@ A101KAPIDA = ShopConfig(
 )
 
 
+# ── Essenjet ──────────────────────────────────────────────────────────────────
+
+async def _essenjet_wait(page) -> None:
+    """Wait for Vue SPA to render product cards, then dismiss cookie banner."""
+    await asyncio.sleep(4)
+    try:
+        btn = await page.query_selector("button:has-text('ANLADIM')")
+        if btn:
+            await btn.click()
+            await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
+
+async def scrape_essenjet_impl() -> list[dict]:
+    """Essenjet needs its own unthrottled browser — no stylesheet blocking."""
+    from playwright.async_api import async_playwright
+    from src.utils import parse_tr_price
+
+    products: list[dict] = []
+    base_url = "https://www.essenjet.com"
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            extra_http_headers={"Accept-Language": "tr-TR,tr;q=0.9"},
+        )
+
+        cookie_dismissed = False
+        sem = asyncio.Semaphore(3)
+
+        async def _scrape_url(url: str) -> list[dict]:
+            nonlocal cookie_dismissed
+            result = []
+            page = await context.new_page()
+            try:
+                await page.goto(url, wait_until="networkidle", timeout=60_000)
+                await asyncio.sleep(3)
+                if not cookie_dismissed:
+                    try:
+                        btn = await page.query_selector("button:has-text('ANLADIM')")
+                        if btn:
+                            await btn.click()
+                            cookie_dismissed = True
+                            await asyncio.sleep(0.5)
+                    except Exception:
+                        pass
+
+                rows = await page.evaluate(f"""() => {{
+                    const cards = document.querySelectorAll('.urunler-col');
+                    return Array.from(cards).map(c => {{
+                        const nameEl  = c.querySelector('h6.min-height-name');
+                        const priceEl = c.querySelector('span.priceText');
+                        const linkEl  = c.querySelector('a');
+                        return {{
+                            name:  nameEl  ? nameEl.innerText.trim()  : '',
+                            price: priceEl ? priceEl.innerText.trim() : '',
+                            href:  linkEl  ? linkEl.getAttribute('href') : '',
+                        }};
+                    }});
+                }}""")
+
+                for row in rows:
+                    if not row["name"]:
+                        continue
+                    # Essenjet uses "28.50 ₺" (dot = decimal) — convert to Turkish "28,50 ₺"
+                    price_str = row["price"].replace(".", ",")
+                    price = parse_tr_price(price_str)
+                    if price <= 0:
+                        continue
+                    href = row["href"] or ""
+                    product_url = (base_url + href) if href.startswith("/") else href or url
+                    result.append({
+                        "product_name":  row["name"],
+                        "current_price": price,
+                        "market_name":   "Essenjet",
+                        "product_url":   product_url,
+                    })
+                logger.info(f"Essenjet: {url} → {len(result)} products")
+            except Exception as exc:
+                logger.error(f"Essenjet error for {url}: {exc}")
+            finally:
+                await page.close()
+            return result
+
+        async def _bounded(url: str) -> list[dict]:
+            async with sem:
+                return await _scrape_url(url)
+
+        tasks = [asyncio.create_task(_bounded(u)) for u in ESSENJET.target_urls]
+        results = await asyncio.gather(*tasks)
+        await browser.close()
+
+    products = [p for batch in results for p in batch]
+    logger.info(f"Essenjet scrape complete: {len(products)} total products")
+    return products
+
+
+ESSENJET = ShopConfig(
+    market_name  = "Essenjet",
+    base_url     = "https://www.essenjet.com",
+    target_urls  = [
+        "https://www.essenjet.com/kategori/12/Atistirmalik",
+        "https://www.essenjet.com/kategori/50/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/60/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/13/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/40/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/91/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/90/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/70/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/81/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/80/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/30/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/20/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/21/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/10/Bebek-Urunleri",
+        "https://www.essenjet.com/kategori/14/Bebek-Urunleri",
+    ],
+    card_sel            = ".urunler-col",
+    name_sel            = "h6.min-height-name",
+    price_sel           = "span.priceText",
+    link_sel            = "a",
+    pagination          = NONE,
+    url_concurrency     = 3,
+    pre_scrape_hook     = _essenjet_wait,
+)
+
+
 # ── Public scrape functions (keep same interface as before) ───────────────────
 
 async def scrape_bizimtoptan() -> list[dict]:
@@ -356,3 +485,6 @@ async def scrape_sok() -> list[dict]:
 
 async def scrape_a101kapida() -> list[dict]:
     return await scrape_shop(A101KAPIDA)
+
+async def scrape_essenjet() -> list[dict]:
+    return await scrape_essenjet_impl()

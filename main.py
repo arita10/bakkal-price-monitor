@@ -37,6 +37,7 @@ from src.parsers.scrapers import (
     scrape_migros,
     scrape_sok,
     scrape_a101kapida,
+    scrape_essenjet,
 )
 from src.pipeline import get_last_prices, upsert_prices, init_supabase  # bulk ops
 
@@ -117,6 +118,7 @@ async def run() -> None:
         scrape_migros(),
         scrape_sok(),
         scrape_a101kapida(),
+        scrape_essenjet(),
         scrape_bim_flyers(config),
     )
 
