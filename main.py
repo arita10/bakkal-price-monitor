@@ -40,6 +40,7 @@ from src.parsers.scrapers import (
     scrape_essenjet,
 )
 from src.pipeline import get_last_prices, upsert_prices, init_supabase  # bulk ops
+from src.enrichment import enrich_products
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -72,8 +73,8 @@ async def run() -> None:
     threshold = config["PRICE_DROP_THRESHOLD"]
 
     # ── 2. Initialise clients ────────────────────────────────────────────────
-    db_url = config["SUPABASE_URL"]   # passed to legacy read functions (unused by new client)
-    init_supabase(config["SUPABASE_URL"], config["SUPABASE_KEY"])
+    db_url = config["SUPABASE_URL"]
+    sb_client = init_supabase(config["SUPABASE_URL"], config["SUPABASE_KEY"])
     openai_client = build_client(config["OPENAI_API_KEY"])
 
     # ── Deduplication set ────────────────────────────────────────────────────
@@ -212,7 +213,15 @@ async def run() -> None:
     total_scraped, total_errors = upsert_prices(db_url, valid_products, last_prices)
     total_errors += invalid_count
 
-    # ── 12. Daily summary ────────────────────────────────────────────────────
+    # ── 12. Barcode enrichment (background — non-blocking on failure) ─────────
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, enrich_products, sb_client, valid_products
+        )
+    except Exception as exc:
+        logger.warning(f"Enrichment step failed (non-critical): {exc}")
+
+    # ── 14. Daily summary ────────────────────────────────────────────────────
     send_daily_summary(
         config["TELEGRAM_BOT_TOKEN"],
         config["TELEGRAM_CHAT_ID"],

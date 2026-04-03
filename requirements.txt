@@ -21,3 +21,6 @@ uvicorn[standard]==0.40.0
 # Config / Utilities
 python-dotenv==1.0.1
 pydantic==2.12.5
+
+# Product enrichment (barcode lookup)
+rapidfuzz==3.12.2

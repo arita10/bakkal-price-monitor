@@ -24,10 +24,11 @@ _BATCH_SIZE = 500
 _client: Client | None = None
 
 
-def init_supabase(url: str, key: str) -> None:
-    """Initialise Supabase client (call once at startup)."""
+def init_supabase(url: str, key: str) -> Client:
+    """Initialise Supabase client (call once at startup). Returns the client."""
     global _client
     _client = create_client(url, key)
+    return _client
 
 
 def _sb() -> Client:
