@@ -88,8 +88,8 @@ def _get_existing_map(sb: Client, names: list[str]) -> dict[str, str]:
     if not names:
         return result
     try:
-        for i in range(0, len(names), 500):
-            chunk = names[i:i + 500]
+        for i in range(0, len(names), 50):   # small chunks — long names = huge URLs
+            chunk = names[i:i + 50]
             resp = (
                 sb.table("sp_product_name_map")
                 .select("scraped_name, barcode")
