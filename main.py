@@ -108,6 +108,7 @@ async def run() -> None:
         migros_raw,
         sok_raw,
         a101kapida_raw,
+        essenjet_raw,
         bim_raw,
     ) = await asyncio.gather(
         fetch_all_marketfiyati(config),
@@ -154,10 +155,12 @@ async def run() -> None:
     migros_added     = _add_direct(migros_raw)
     sok_added        = _add_direct(sok_raw)
     a101kapida_added = _add_direct(a101kapida_raw)
+    essenjet_added   = _add_direct(essenjet_raw)
     logger.info(
         f"Playwright done — "
         f"BizimToptan:{bizim_added} CarrefourSA:{carrefour_added} "
-        f"Migros:{migros_added} SOK:{sok_added} A101Kapida:{a101kapida_added}"
+        f"Migros:{migros_added} SOK:{sok_added} A101Kapida:{a101kapida_added} "
+        f"Essenjet:{essenjet_added}"
     )
 
     # BIM flyers (Playwright + GPT-4o Vision)
